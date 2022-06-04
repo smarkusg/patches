@@ -1,0 +1,17 @@
+diff --color -rupN ./a/toplevel.h ./b/toplevel.h
+--- a/toplevel.h	2021-10-22 21:33:16.000000000 +0200
++++ b/toplevel.h	2022-05-17 12:16:52.000000000 +0200
+@@ -298,6 +298,13 @@ class KWIN_EXPORT Toplevel : public QObj
+      */
+     Q_PROPERTY(QUuid internalId READ internalId CONSTANT)
+ 
++    /**
++     * The pid of the process owning this window.
++     *
++     * @since 5.20
++     */
++    Q_PROPERTY(int pid READ pid CONSTANT)
++
+ public:
+     explicit Toplevel();
+     virtual xcb_window_t frameId() const;

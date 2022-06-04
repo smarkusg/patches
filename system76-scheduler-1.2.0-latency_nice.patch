@@ -1,0 +1,265 @@
+diff --color -rupN ./a/daemon/src/nice.rs ./b/daemon/src/nice.rs
+--- a/daemon/src/nice.rs	2022-06-02 14:40:51.256615649 +0200
++++ b/daemon/src/nice.rs	2022-06-03 11:45:14.969251506 +0200
+@@ -4,10 +4,56 @@
+ use concat_in_place::strcat;
+ use ioprio::{Pid, Target};
+ 
++#[repr(C)]
++#[derive(Debug, Default)]
++#[cfg(target_os = "linux")]
++pub struct SchedAttr {
++    size: u32,
++    sched_policy: u32,
++    sched_flags: u64,
++
++    /// for SCHED_NORMAL and SCHED_BATCH
++    sched_nice: i32,
++    /// for SCHED_FIFO, SCHED_RR
++    sched_priority: u32,
++
++    /// for SCHED_DEADLINE
++    sched_runtime: u64,
++    /// for SCHED_DEADLINE
++    sched_deadline: u64,
++    /// for SCHED_DEADLINE
++    sched_period: u64,
++
++    /// Utilization hint
++    sched_util_min: u32,
++    /// Utilization hint
++    sched_util_max: u32,
++   /// Latency nice 
++    sched_latency_nice: i32,
++}
++pub fn set_latency_nice(process: u32, prio: i32) {
++
++    pub const SCHED_FLAG_LATENCY_NICE: u64 = 0x80;
++    let tid = process as libc::pid_t;
++    let sched_attr = SchedAttr {
++                    size: std::mem::size_of::<SchedAttr>() as u32,
++		      sched_flags: SCHED_FLAG_LATENCY_NICE,
++		      sched_latency_nice: prio,
++                    ..Default::default()
++                };
++
++                unsafe {
++		    libc::syscall(
++                    libc::SYS_sched_setattr,
++                    tid,
++                    &sched_attr as *const _,
++                    0,);
++		    }
++}
++
+ pub fn set_priority(process: u32, priority: (i32, ioprio::Priority)) {
+     let mut buffer = itoa::Buffer::new();
+     let tasks = strcat!("/proc/" buffer.format(process) "/task");
+-
+     if let Ok(tasks) = std::fs::read_dir(tasks) {
+         for task in tasks.filter_map(Result::ok) {
+             if let Some(process) = task
+diff --color -rupN ./a/daemon/src/priority.rs ./b/daemon/src/priority.rs
+--- a/daemon/src/priority.rs	2022-06-03 11:42:27.099878735 +0200
++++ b/daemon/src/priority.rs	2022-06-03 11:44:53.876578760 +0200
+@@ -46,6 +46,7 @@ impl Service {
+     pub fn assign(&self, pid: u32, default: (i32, IoPriority)) -> AssignmentStatus {
+         if let Some(priority) = self.assigned_priority(pid).with_default(default) {
+             crate::nice::set_priority(pid, priority);
++            crate::nice::set_latency_nice(pid, priority.0);
+             return AssignmentStatus::Assigned;
+         }
+ 
+@@ -114,6 +115,8 @@ impl Service {
+                 let class = ioprio::Class::BestEffort(level);
+                 let io_priority = ioprio::Priority::new(class);
+                 crate::nice::set_priority(pid, (0, io_priority));
++                crate::nice::set_latency_nice(pid, (0, io_priority).0);
++
+             }
+ 
+             return;
+@@ -158,6 +161,7 @@ impl Service {
+                     .with_default(background_priority)
+                 {
+                     crate::nice::set_priority(process, priority);
++                    crate::nice::set_latency_nice(process, priority.0);
+                 }
+             }
+ 
+@@ -168,6 +172,7 @@ impl Service {
+                 .with_default(foreground_priority)
+             {
+                 crate::nice::set_priority(pid, priority);
++                crate::nice::set_latency_nice(pid, priority.0);
+                 self.foreground_processes.push(pid);
+             }
+ 
+@@ -182,6 +187,7 @@ impl Service {
+                                 .with_default(foreground_priority)
+                             {
+                                 crate::nice::set_priority(*pid, priority);
++	                        crate::nice::set_latency_nice(*pid, priority.0);
+                                 self.foreground_processes.push(*pid);
+                                 continue 'outer;
+                             }
+@@ -210,6 +216,7 @@ impl Service {
+                     .with_default((i32::from(background), IoPriority::Idle))
+                 {
+                     crate::nice::set_priority(pid, priority);
++                    crate::nice::set_latency_nice(pid, priority.0);
+                 }
+             }
+         }
+diff --color -rupN ./a/data/default.ron ./b/data/default.ron
+--- a/data/default.ron	1970-01-01 01:00:00.000000000 +0100
++++ b/data/default.ron	2022-06-03 22:30:22.610093010 +0200
+@@ -0,0 +1,148 @@
++// WARNING: Modifications to this file will not be preserved on upgrade.
++// To configure, make new .ron files under /etc/system76-scheduler/assignments/.
++
++{
++// Prevent audio crackling from sound services.
++(-11, Realtime(0)): [
++    "pipewire",
++    "pipewire-pulse",
++    "wireplumber",
++    "pulseaudio",
++],
++// Very high
++(-9, BestEffort(0)): [
++    "easyeffects",
++    "pulseeffects",
++],
++// High priority
++(-5, BestEffort(4)): [
++    "amsynth",
++    "gnome-shell",
++    "plasmashell",
++    "kwin",
++    "kwin_x11",
++    "sway",
++    "steam",
++    "vrcompositor",
++    "vrdashboard",
++    "vrmonitor",
++    "vrserver",
++    "Xorg",
++"latte-dock",
++],
++// Default
++0: [
++    "dbus",
++    "sshd",
++    "systemd",
++],
++// Low
++(9, Idle): [
++    "accounts-daemon",
++    "acpid",
++    "automount",
++    "avahi-daemon",
++    "bluetoothd",
++    "colord",
++    "cron",
++    "cups-browsed",
++    "cupsd",
++    "dconf-service",
++    "dnsmasq",
++    "dockerd",
++    "evolution-source-registry",
++    "evolution-calendar-factory",
++    "evolution-addressbook-factory",
++    "evolution-alarm-notify",
++    "fwupd",
++    "goa-daemon",
++    "goa-identify-service",
++    "gsd-a11y-settings",
++    "gsd-color",
++    "gsd-datetime",
++    "gsd-housekeeping",
++    "gsd-keyboard",
++    "gsd-media-keys",
++    "gsd-disk-utility-notify",
++    "gsd-power",
++    "gsd-print-notifications",
++    "gsd-rfkill",
++    "gsd-screensaver-proxy",
++    "gsd-sharing",
++    "gsd-smartcard",
++    "gsd-sound",
++    "gsd-wacom",
++    "gsd-xsettings",
++    "gsd-printer",
++    "hidpi-daemon",
++    "iwd",
++    "ModemManager",
++    "NetworkManager",
++    "pop-system-updater",
++    "rpcbind",
++    "system76-daemon",
++    "system76-firmware-daemon",
++    "system76-power",
++    "system76-scheduler",
++    "system76-user-daemon",
++    "thermald",
++    "udisksd",
++    "upowerd",
++    "akonadi_control",
++    "akonadiserver",
++    "akonadi_archivemail_agent",
++    "akonadi_indexing_agent", 
++    "akonadi_mailfilter_agent",
++    "akonadi_kalarm_resource",
++    "akonadi_imap_resource", 
++    "akonadi_indexing_agent",
++    "akonadi_maildir_resource",
++    "akonadi_maildispatcher_agent",
++    "akonadi_followupreminder_agent", 
++    "akonadi_maildispatcher_agent",
++    "akonadi_mailfilter_agent",
++    "akonadi_migration_agent",
++    "akonadi_newmailnotifier_agent", 
++    "akonadi_sendlater_agent",
++    "akonadi_unifiedmailbox_agent", 
++    "akonadi_newmailnotifier_agent",
++    "QtWebEngineProcess",
++    "kwalletd5",
++    "org_kde_powerdevil",
++    "mysqld",
++    "gitstatusd-linux-x86_64",
++    "kiod5",
++    "kio_http_cache_cleaner",
++    "kalarm",
++    "php-cgi",
++    "pihole-FTL",
++    "lighttpd",
++],
++// Absolute lowest priority
++(19, Idle): [
++    "apt",
++    "apt-get",
++    "snapd",
++    "boinc",
++    "dpkg",
++    "FAHClient",
++    "FAHCoreWrapper",
++    "fossilize_replay",
++    "flatpak",
++    "c++",
++    "cargo",
++    "clang",
++    "cpp",
++    "cc1plus",
++    "ld",
++    "g++",
++    "gcc",
++    "lld",
++    "make",
++    "mold",
++    "rustc",
++    "tracker-miner-fs-3",
++    "update-initramfs",
++    "packagekitd",
++    "baloo_file",
++]}
