@@ -1,0 +1,2172 @@
+diff --color -rupN ./a/linux/seccomp-bpf-helpers/baseline_policy.cc ./b/linux/seccomp-bpf-helpers/baseline_policy.cc
+--- ./a/linux/seccomp-bpf-helpers/baseline_policy.cc	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/seccomp-bpf-helpers/baseline_policy.cc	2022-10-19 10:31:07.921320683 +0200
+@@ -136,6 +136,15 @@ ResultExpr EvaluateSyscallImpl(int fs_de
+     return Allow();
+ #endif
+ 
++#if defined(__NR_rseq) && !defined(OS_ANDROID)
++  // See https://crbug.com/1104160. Rseq can only be disabled right before an
++  // execve, because glibc registers it with the kernel and so far it's unclear
++  // whether shared libraries (which, during initialization, may observe that
++  // rseq is already registered) should have to deal with deregistration.
++  if (sysno == __NR_rseq)
++    return Allow();
++#endif
++
+   if (sysno == __NR_clock_gettime || sysno == __NR_clock_nanosleep) {
+     return RestrictClockID();
+   }
+@@ -144,6 +153,12 @@ ResultExpr EvaluateSyscallImpl(int fs_de
+     return RestrictCloneToThreadsAndEPERMFork();
+   }
+ 
++  // clone3 takes a pointer argument which we cannot examine, so return ENOSYS
++  // to force the libc to use clone. See https://crbug.com/1213452.
++  if (sysno == __NR_clone3) {
++    return Error(ENOSYS);
++  }
++
+   if (sysno == __NR_fcntl)
+     return RestrictFcntlCommands();
+ 
+@@ -223,6 +238,18 @@ ResultExpr EvaluateSyscallImpl(int fs_de
+     return RestrictKillTarget(current_pid, sysno);
+   }
+ 
++#if defined(__NR_newfstatat)
++  if (sysno == __NR_newfstatat) {
++    return RewriteFstatatSIGSYS();
++  }
++#endif
++
++#if defined(__NR_fstatat64)
++  if (sysno == __NR_fstatat64) {
++    return RewriteFstatatSIGSYS();
++  }
++#endif
++
+   if (SyscallSets::IsFileSystem(sysno) ||
+       SyscallSets::IsCurrentDirectory(sysno)) {
+     return Error(fs_denied_errno);
+diff --color -rupN ./a/linux/seccomp-bpf-helpers/sigsys_handlers.cc ./b/linux/seccomp-bpf-helpers/sigsys_handlers.cc
+--- ./a/linux/seccomp-bpf-helpers/sigsys_handlers.cc	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/seccomp-bpf-helpers/sigsys_handlers.cc	2022-10-19 10:51:07.331541319 +0200
+@@ -6,6 +6,8 @@
+ 
+ #include "sandbox/linux/seccomp-bpf-helpers/sigsys_handlers.h"
+ 
++#include <errno.h>
++#include <fcntl.h>
+ #include <stddef.h>
+ #include <stdint.h>
+ #include <sys/syscall.h>
+@@ -338,6 +340,35 @@ intptr_t SIGSYSSchedHandler(const struct
+   return -ENOSYS;
+ }
+ 
++intptr_t SIGSYSFstatatHandler(const struct arch_seccomp_data& args,
++                            void* aux) {
++  switch (args.nr) {
++#if defined(__NR_newfstatat)
++    case __NR_newfstatat:
++#endif
++#if defined(__NR_fstatat64)
++    case __NR_fstatat64:
++#endif
++#if defined(__NR_newfstatat) || defined(__NR_fstatat64)
++      if (*reinterpret_cast<const char *>(args.args[1]) == '\0'
++          && args.args[3] == static_cast<uint64_t>(AT_EMPTY_PATH)) {
++        return sandbox::sys_fstat64(static_cast<int>(args.args[0]),
++                                    reinterpret_cast<struct stat64 *>(args.args[2]));
++      } else {
++        errno = EACCES;
++        return -1;
++      }
++      break;
++#endif
++  }
++
++  CrashSIGSYS_Handler(args, aux);
++
++  // Should never be reached.
++  RAW_CHECK(false);
++  return -ENOSYS;
++}
++
+ bpf_dsl::ResultExpr CrashSIGSYS() {
+   return bpf_dsl::Trap(CrashSIGSYS_Handler, NULL);
+ }
+@@ -366,6 +397,10 @@ bpf_dsl::ResultExpr RewriteSchedSIGSYS()
+   return bpf_dsl::Trap(SIGSYSSchedHandler, NULL);
+ }
+ 
++bpf_dsl::ResultExpr RewriteFstatatSIGSYS() {
++  return bpf_dsl::Trap(SIGSYSFstatatHandler, NULL);
++}
++
+ void AllocateCrashKeys() {
+ #if !defined(OS_NACL_NONSFI)
+   if (seccomp_crash_key)
+diff --color -rupN ./a/linux/seccomp-bpf-helpers/sigsys_handlers.h ./b/linux/seccomp-bpf-helpers/sigsys_handlers.h
+--- ./a/linux/seccomp-bpf-helpers/sigsys_handlers.h	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/seccomp-bpf-helpers/sigsys_handlers.h	2022-10-19 10:33:16.630766129 +0200
+@@ -59,6 +59,11 @@ SANDBOX_EXPORT intptr_t
+ SANDBOX_EXPORT intptr_t
+     SIGSYSSchedHandler(const struct arch_seccomp_data& args, void* aux);
+ 
++// If the fstatat syscall is actually a disguised fstat, calls the regular fstat
++// syscall, otherwise, crashes in the same way as CrashSIGSYS_Handler.
++SANDBOX_EXPORT intptr_t SIGSYSFstatatHandler(const struct arch_seccomp_data& args, 
++                                             void* aux);
++
+ // Variants of the above functions for use with bpf_dsl.
+ SANDBOX_EXPORT bpf_dsl::ResultExpr CrashSIGSYS();
+ SANDBOX_EXPORT bpf_dsl::ResultExpr CrashSIGSYSClone();
+@@ -67,6 +72,7 @@ SANDBOX_EXPORT bpf_dsl::ResultExpr Crash
+ SANDBOX_EXPORT bpf_dsl::ResultExpr CrashSIGSYSKill();
+ SANDBOX_EXPORT bpf_dsl::ResultExpr CrashSIGSYSFutex();
+ SANDBOX_EXPORT bpf_dsl::ResultExpr RewriteSchedSIGSYS();
++SANDBOX_EXPORT bpf_dsl::ResultExpr RewriteFstatatSIGSYS();
+ 
+ // Allocates a crash key so that Seccomp information can be recorded.
+ void AllocateCrashKeys();
+diff --color -rupN ./a/linux/services/credentials.cc ./b/linux/services/credentials.cc
+--- ./a/linux/services/credentials.cc	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/services/credentials.cc	2022-10-19 11:05:42.773997284 +0200
+@@ -95,7 +95,10 @@ bool ChrootToSafeEmptyDir() {
+   // attempt this optimization.
+   clone_flags |= CLONE_VM | CLONE_VFORK | CLONE_SETTLS;
+ 
+-  char tls_buf[PTHREAD_STACK_MIN] = {0};
++  // PTHREAD_STACK_MIN can be dynamic in glibc2.34+, so it is not possible to
++  // zeroify tls_buf assigning { 0 }
++  char tls_buf[PTHREAD_STACK_MIN];
++  memset(tls_buf, 0, PTHREAD_STACK_MIN);
+   tls = tls_buf;
+ #endif
+ 
+diff --color -rupN ./a/linux/services/syscall_wrappers.cc ./b/linux/services/syscall_wrappers.cc
+--- ./a/linux/services/syscall_wrappers.cc	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/services/syscall_wrappers.cc	2022-10-19 10:34:06.016094316 +0200
+@@ -261,4 +261,13 @@ int sys_sigaction(int signum,
+ 
+ #endif  // defined(MEMORY_SANITIZER)
+ 
++SANDBOX_EXPORT int sys_fstat64(int fd, struct stat64 *buf)
++{
++#if defined(__NR_fstat64)
++    return syscall(__NR_fstat64, fd, buf);
++#else
++    return syscall(__NR_fstat, fd, buf);
++#endif
++}
++
+ }  // namespace sandbox
+diff --color -rupN ./a/linux/services/syscall_wrappers.h ./b/linux/services/syscall_wrappers.h
+--- ./a/linux/services/syscall_wrappers.h	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/services/syscall_wrappers.h	2022-10-19 10:58:23.720540879 +0200
+@@ -17,6 +17,7 @@ struct sock_fprog;
+ struct rlimit64;
+ struct cap_hdr;
+ struct cap_data;
++struct stat64;
+ 
+ namespace sandbox {
+ 
+@@ -84,6 +85,9 @@ SANDBOX_EXPORT int sys_sigaction(int sig
+                                  const struct sigaction* act,
+                                  struct sigaction* oldact);
+ 
++// Recent glibc rewrites fstat to fstatat.
++SANDBOX_EXPORT int sys_fstat64(int fd, struct stat64 *buf);
++
+ }  // namespace sandbox
+ 
+ #endif  // SANDBOX_LINUX_SERVICES_SYSCALL_WRAPPERS_H_
+diff --color -rupN ./a/linux/system_headers/arm64_linux_syscalls.h ./b/linux/system_headers/arm64_linux_syscalls.h
+--- ./a/linux/system_headers/arm64_linux_syscalls.h	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/system_headers/arm64_linux_syscalls.h	2022-05-23 13:38:40.000000000 +0200
+@@ -1063,4 +1063,156 @@
+ #define __NR_memfd_create 279
+ #endif
+ 
++#if !defined(__NR_bpf)
++#define __NR_bpf 280
++#endif
++
++#if !defined(__NR_execveat)
++#define __NR_execveat 281
++#endif
++
++#if !defined(__NR_userfaultfd)
++#define __NR_userfaultfd 282
++#endif
++
++#if !defined(__NR_membarrier)
++#define __NR_membarrier 283
++#endif
++
++#if !defined(__NR_mlock2)
++#define __NR_mlock2 284
++#endif
++
++#if !defined(__NR_copy_file_range)
++#define __NR_copy_file_range 285
++#endif
++
++#if !defined(__NR_preadv2)
++#define __NR_preadv2 286
++#endif
++
++#if !defined(__NR_pwritev2)
++#define __NR_pwritev2 287
++#endif
++
++#if !defined(__NR_pkey_mprotect)
++#define __NR_pkey_mprotect 288
++#endif
++
++#if !defined(__NR_pkey_alloc)
++#define __NR_pkey_alloc 289
++#endif
++
++#if !defined(__NR_pkey_free)
++#define __NR_pkey_free 290
++#endif
++
++#if !defined(__NR_statx)
++#define __NR_statx 291
++#endif
++
++#if !defined(__NR_io_pgetevents)
++#define __NR_io_pgetevents 292
++#endif
++
++#if !defined(__NR_rseq)
++#define __NR_rseq 293
++#endif
++
++#if !defined(__NR_kexec_file_load)
++#define __NR_kexec_file_load 294
++#endif
++
++#if !defined(__NR_pidfd_send_signal)
++#define __NR_pidfd_send_signal 424
++#endif
++
++#if !defined(__NR_io_uring_setup)
++#define __NR_io_uring_setup 425
++#endif
++
++#if !defined(__NR_io_uring_enter)
++#define __NR_io_uring_enter 426
++#endif
++
++#if !defined(__NR_io_uring_register)
++#define __NR_io_uring_register 427
++#endif
++
++#if !defined(__NR_open_tree)
++#define __NR_open_tree 428
++#endif
++
++#if !defined(__NR_move_mount)
++#define __NR_move_mount 429
++#endif
++
++#if !defined(__NR_fsopen)
++#define __NR_fsopen 430
++#endif
++
++#if !defined(__NR_fsconfig)
++#define __NR_fsconfig 431
++#endif
++
++#if !defined(__NR_fsmount)
++#define __NR_fsmount 432
++#endif
++
++#if !defined(__NR_fspick)
++#define __NR_fspick 433
++#endif
++
++#if !defined(__NR_pidfd_open)
++#define __NR_pidfd_open 434
++#endif
++
++#if !defined(__NR_clone3)
++#define __NR_clone3 435
++#endif
++
++#if !defined(__NR_close_range)
++#define __NR_close_range 436
++#endif
++
++#if !defined(__NR_openat2)
++#define __NR_openat2 437
++#endif
++
++#if !defined(__NR_pidfd_getfd)
++#define __NR_pidfd_getfd 438
++#endif
++
++#if !defined(__NR_faccessat2)
++#define __NR_faccessat2 439
++#endif
++
++#if !defined(__NR_process_madvise)
++#define __NR_process_madvise 440
++#endif
++
++#if !defined(__NR_epoll_pwait2)
++#define __NR_epoll_pwait2 441
++#endif
++
++#if !defined(__NR_mount_setattr)
++#define __NR_mount_setattr 442
++#endif
++
++#if !defined(__NR_quotactl_path)
++#define __NR_quotactl_path 443
++#endif
++
++#if !defined(__NR_landlock_create_ruleset)
++#define __NR_landlock_create_ruleset 444
++#endif
++
++#if !defined(__NR_landlock_add_rule)
++#define __NR_landlock_add_rule 445
++#endif
++
++#if !defined(__NR_landlock_restrict_self)
++#define __NR_landlock_restrict_self 446
++#endif
++
+ #endif  // SANDBOX_LINUX_SYSTEM_HEADERS_ARM64_LINUX_SYSCALLS_H_
+diff --color -rupN ./a/linux/system_headers/arm_linux_syscalls.h ./b/linux/system_headers/arm_linux_syscalls.h
+--- ./a/linux/system_headers/arm_linux_syscalls.h	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/system_headers/arm_linux_syscalls.h	2022-05-23 13:38:40.000000000 +0200
+@@ -1385,6 +1385,238 @@
+ #define __NR_memfd_create (__NR_SYSCALL_BASE+385)
+ #endif
+ 
++#if !defined(__NR_bpf)
++#define __NR_bpf (__NR_SYSCALL_BASE+386)
++#endif
++
++#if !defined(__NR_execveat)
++#define __NR_execveat (__NR_SYSCALL_BASE+387)
++#endif
++
++#if !defined(__NR_userfaultfd)
++#define __NR_userfaultfd (__NR_SYSCALL_BASE+388)
++#endif
++
++#if !defined(__NR_membarrier)
++#define __NR_membarrier (__NR_SYSCALL_BASE+389)
++#endif
++
++#if !defined(__NR_mlock2)
++#define __NR_mlock2 (__NR_SYSCALL_BASE+390)
++#endif
++
++#if !defined(__NR_copy_file_range)
++#define __NR_copy_file_range (__NR_SYSCALL_BASE+391)
++#endif
++
++#if !defined(__NR_preadv2)
++#define __NR_preadv2 (__NR_SYSCALL_BASE+392)
++#endif
++
++#if !defined(__NR_pwritev2)
++#define __NR_pwritev2 (__NR_SYSCALL_BASE+393)
++#endif
++
++#if !defined(__NR_pkey_mprotect)
++#define __NR_pkey_mprotect (__NR_SYSCALL_BASE+394)
++#endif
++
++#if !defined(__NR_pkey_alloc)
++#define __NR_pkey_alloc (__NR_SYSCALL_BASE+395)
++#endif
++
++#if !defined(__NR_pkey_free)
++#define __NR_pkey_free (__NR_SYSCALL_BASE+396)
++#endif
++
++#if !defined(__NR_statx)
++#define __NR_statx (__NR_SYSCALL_BASE+397)
++#endif
++
++#if !defined(__NR_rseq)
++#define __NR_rseq (__NR_SYSCALL_BASE+398)
++#endif
++
++#if !defined(__NR_io_pgetevents)
++#define __NR_io_pgetevents (__NR_SYSCALL_BASE+399)
++#endif
++
++#if !defined(__NR_landlock_create_ruleset)
++#define __NR_landlock_create_ruleset (__NR_SYSCALL_BASE + 444)
++#endif
++
++#if !defined(__NR_landlock_add_rule)
++#define __NR_landlock_add_rule (__NR_SYSCALL_BASE + 445)
++#endif
++
++#if !defined(__NR_landlock_restrict_self)
++#define __NR_landlock_restrict_self (__NR_SYSCALL_BASE + 446)
++#endif
++
++#if !defined(__NR_migrate_pages)
++#define __NR_migrate_pages (__NR_SYSCALL_BASE + 400)
++#endif
++
++#if !defined(__NR_kexec_file_load)
++#define __NR_kexec_file_load (__NR_SYSCALL_BASE + 401)
++#endif
++
++#if !defined(__NR_clock_gettime64)
++#define __NR_clock_gettime64 (__NR_SYSCALL_BASE + 403)
++#endif
++
++#if !defined(__NR_clock_settime64)
++#define __NR_clock_settime64 (__NR_SYSCALL_BASE + 404)
++#endif
++
++#if !defined(__NR_clock_adjtime64)
++#define __NR_clock_adjtime64 (__NR_SYSCALL_BASE + 405)
++#endif
++
++#if !defined(__NR_clock_getres_time64)
++#define __NR_clock_getres_time64 (__NR_SYSCALL_BASE + 406)
++#endif
++
++#if !defined(__NR_clock_nanosleep_time64)
++#define __NR_clock_nanosleep_time64 (__NR_SYSCALL_BASE + 407)
++#endif
++
++#if !defined(__NR_timer_gettime64)
++#define __NR_timer_gettime64 (__NR_SYSCALL_BASE + 408)
++#endif
++
++#if !defined(__NR_timer_settime64)
++#define __NR_timer_settime64 (__NR_SYSCALL_BASE + 409)
++#endif
++
++#if !defined(__NR_timerfd_gettime64)
++#define __NR_timerfd_gettime64 (__NR_SYSCALL_BASE + 410)
++#endif
++
++#if !defined(__NR_timerfd_settime64)
++#define __NR_timerfd_settime64 (__NR_SYSCALL_BASE + 411)
++#endif
++
++#if !defined(__NR_utimensat_time64)
++#define __NR_utimensat_time64 (__NR_SYSCALL_BASE + 412)
++#endif
++
++#if !defined(__NR_pselect6_time64)
++#define __NR_pselect6_time64 (__NR_SYSCALL_BASE + 413)
++#endif
++
++#if !defined(__NR_ppoll_time64)
++#define __NR_ppoll_time64 (__NR_SYSCALL_BASE + 414)
++#endif
++
++#if !defined(__NR_io_pgetevents_time64)
++#define __NR_io_pgetevents_time64 (__NR_SYSCALL_BASE + 416)
++#endif
++
++#if !defined(__NR_recvmmsg_time64)
++#define __NR_recvmmsg_time64 (__NR_SYSCALL_BASE + 417)
++#endif
++
++#if !defined(__NR_mq_timedsend_time64)
++#define __NR_mq_timedsend_time64 (__NR_SYSCALL_BASE + 418)
++#endif
++
++#if !defined(__NR_mq_timedreceive_time64)
++#define __NR_mq_timedreceive_time64 (__NR_SYSCALL_BASE + 419)
++#endif
++
++#if !defined(__NR_semtimedop_time64)
++#define __NR_semtimedop_time64 (__NR_SYSCALL_BASE + 420)
++#endif
++
++#if !defined(__NR_rt_sigtimedwait_time64)
++#define __NR_rt_sigtimedwait_time64 (__NR_SYSCALL_BASE + 421)
++#endif
++
++#if !defined(__NR_futex_time64)
++#define __NR_futex_time64 (__NR_SYSCALL_BASE + 422)
++#endif
++
++#if !defined(__NR_sched_rr_get_interval_time64)
++#define __NR_sched_rr_get_interval_time64 (__NR_SYSCALL_BASE + 423)
++#endif
++
++#if !defined(__NR_pidfd_send_signal)
++#define __NR_pidfd_send_signal (__NR_SYSCALL_BASE + 424)
++#endif
++
++#if !defined(__NR_io_uring_setup)
++#define __NR_io_uring_setup (__NR_SYSCALL_BASE + 425)
++#endif
++
++#if !defined(__NR_io_uring_enter)
++#define __NR_io_uring_enter (__NR_SYSCALL_BASE + 426)
++#endif
++
++#if !defined(__NR_io_uring_register)
++#define __NR_io_uring_register (__NR_SYSCALL_BASE + 427)
++#endif
++
++#if !defined(__NR_open_tree)
++#define __NR_open_tree (__NR_SYSCALL_BASE + 428)
++#endif
++
++#if !defined(__NR_move_mount)
++#define __NR_move_mount (__NR_SYSCALL_BASE + 429)
++#endif
++
++#if !defined(__NR_fsopen)
++#define __NR_fsopen (__NR_SYSCALL_BASE + 430)
++#endif
++
++#if !defined(__NR_fsconfig)
++#define __NR_fsconfig (__NR_SYSCALL_BASE + 431)
++#endif
++
++#if !defined(__NR_fsmount)
++#define __NR_fsmount (__NR_SYSCALL_BASE + 432)
++#endif
++
++#if !defined(__NR_fspick)
++#define __NR_fspick (__NR_SYSCALL_BASE + 433)
++#endif
++
++#if !defined(__NR_pidfd_open)
++#define __NR_pidfd_open (__NR_SYSCALL_BASE + 434)
++#endif
++
++#if !defined(__NR_clone3)
++#define __NR_clone3 (__NR_SYSCALL_BASE + 435)
++#endif
++
++#if !defined(__NR_close_range)
++#define __NR_close_range (__NR_SYSCALL_BASE + 436)
++#endif
++
++#if !defined(__NR_openat2)
++#define __NR_openat2 (__NR_SYSCALL_BASE + 437)
++#endif
++
++#if !defined(__NR_pidfd_getfd)
++#define __NR_pidfd_getfd (__NR_SYSCALL_BASE + 438)
++#endif
++
++#if !defined(__NR_faccessat2)
++#define __NR_faccessat2 (__NR_SYSCALL_BASE + 439)
++#endif
++
++#if !defined(__NR_process_madvise)
++#define __NR_process_madvise (__NR_SYSCALL_BASE + 440)
++#endif
++
++#if !defined(__NR_epoll_pwait2)
++#define __NR_epoll_pwait2 (__NR_SYSCALL_BASE + 441)
++#endif
++
++#if !defined(__NR_mount_setattr)
++#define __NR_mount_setattr (__NR_SYSCALL_BASE + 442)
++#endif
++
+ // ARM private syscalls.
+ #if !defined(__ARM_NR_BASE)
+ #define __ARM_NR_BASE (__NR_SYSCALL_BASE + 0xF0000)
+diff --color -rupN ./a/linux/system_headers/arm_linux_ucontext.h ./b/linux/system_headers/arm_linux_ucontext.h
+--- ./a/linux/system_headers/arm_linux_ucontext.h	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/system_headers/arm_linux_ucontext.h	2022-05-23 13:38:40.000000000 +0200
+@@ -7,10 +7,6 @@
+ 
+ #include <stddef.h>
+ 
+-#if !defined(__BIONIC_HAVE_UCONTEXT_T)
+-#if !defined(__native_client_nonsfi__)
+-#include <asm/sigcontext.h>
+-#else
+ // In PNaCl toolchain, sigcontext and stack_t is not defined. So here declare
+ // them.
+ struct sigcontext {
+@@ -43,7 +39,6 @@ typedef struct sigaltstack {
+   size_t ss_size;
+ } stack_t;
+ 
+-#endif
+ 
+ // We also need greg_t for the sandbox, include it in this header as well.
+ typedef unsigned long greg_t;
+@@ -62,8 +57,4 @@ typedef struct ucontext {
+   unsigned long uc_regspace[128] __attribute__((__aligned__(8)));
+ } ucontext_t;
+ 
+-#else
+-#include <sys/ucontext.h>
+-#endif  // __BIONIC_HAVE_UCONTEXT_T
+-
+ #endif  // SANDBOX_LINUX_SYSTEM_HEADERS_ARM_LINUX_UCONTEXT_H_
+diff --color -rupN ./a/linux/system_headers/i386_linux_ucontext.h ./b/linux/system_headers/i386_linux_ucontext.h
+--- ./a/linux/system_headers/i386_linux_ucontext.h	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/system_headers/i386_linux_ucontext.h	2022-05-23 13:38:40.000000000 +0200
+@@ -8,22 +8,15 @@
+ #include <stddef.h>
+ #include <stdint.h>
+ 
+-// We do something compatible with glibc. Hopefully, at some point Android will
+-// provide that for us, and __BIONIC_HAVE_UCONTEXT_T should be defined.
+ // This is mostly copied from breakpad (common/android/include/sys/ucontext.h),
+ // except we do use sigset_t for uc_sigmask instead of a custom type.
+ 
+-#if !defined(__BIONIC_HAVE_UCONTEXT_T)
+-#if !defined(__native_client_nonsfi__)
+-#include <asm/sigcontext.h>
+-#else
+ // In PNaCl toolchain, sigcontext is not defined. So here declare it.
+ typedef struct sigaltstack {
+   void* ss_sp;
+   int ss_flags;
+   size_t ss_size;
+ } stack_t;
+-#endif
+ 
+ /* 80-bit floating-point register */
+ struct _libc_fpreg {
+@@ -89,8 +82,4 @@ typedef struct ucontext {
+   struct _libc_fpstate __fpregs_mem;
+ } ucontext_t;
+ 
+-#else
+-#include <sys/ucontext.h>
+-#endif  // __BIONIC_HAVE_UCONTEXT_T
+-
+ #endif  // SANDBOX_LINUX_SYSTEM_HEADERS_ANDROID_I386_UCONTEXT_H_
+diff --color -rupN ./a/linux/system_headers/linux_prctl.h ./b/linux/system_headers/linux_prctl.h
+--- ./a/linux/system_headers/linux_prctl.h	1970-01-01 01:00:00.000000000 +0100
++++ ./b/linux/system_headers/linux_prctl.h	2022-05-23 13:38:40.000000000 +0200
+@@ -0,0 +1,35 @@
++// Copyright 2020 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef SANDBOX_LINUX_SYSTEM_HEADERS_LINUX_PRCTL_H_
++#define SANDBOX_LINUX_SYSTEM_HEADERS_LINUX_PRCTL_H_
++
++#include "build/build_config.h"
++
++#if !defined(PR_SET_PDEATHSIG)
++#define PR_SET_PDEATHSIG 1
++#endif
++
++#if !defined(PR_SET_TIMERSLACK)
++#define PR_SET_TIMERSLACK 29
++#endif
++
++#if defined(OS_ANDROID)
++
++// https://android.googlesource.com/platform/bionic/+/lollipop-release/libc/private/bionic_prctl.h
++#if !defined(PR_SET_VMA)
++#define PR_SET_VMA 0x53564d41
++#endif
++
++#endif  // defined(OS_ANDROID)
++
++#if !defined(PR_SET_PTRACER)
++#define PR_SET_PTRACER 0x59616d61
++#endif
++
++#if !defined(PR_SET_PTRACER_ANY)
++#define PR_SET_PTRACER_ANY ((unsigned long)-1)
++#endif
++
++#endif  // SANDBOX_LINUX_SYSTEM_HEADERS_LINUX_PRCTL_H_
+diff --color -rupN ./a/linux/system_headers/linux_seccomp.h ./b/linux/system_headers/linux_seccomp.h
+--- ./a/linux/system_headers/linux_seccomp.h	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/system_headers/linux_seccomp.h	2022-05-23 13:38:40.000000000 +0200
+@@ -5,6 +5,14 @@
+ #ifndef SANDBOX_LINUX_SYSTEM_HEADERS_LINUX_SECCOMP_H_
+ #define SANDBOX_LINUX_SYSTEM_HEADERS_LINUX_SECCOMP_H_
+ 
++#include <stdint.h>
++
++#include "build/build_config.h"
++
++#if !defined(OS_NACL_NONSFI)
++#include <sys/ioctl.h>
++#endif
++
+ // The Seccomp2 kernel ABI is not part of older versions of glibc.
+ // As we can't break compilation with these versions of the library,
+ // we explicitly define all missing symbols.
+@@ -17,15 +25,19 @@
+ #ifndef EM_ARM
+ #define EM_ARM    40
+ #endif
++
+ #ifndef EM_386
+ #define EM_386    3
+ #endif
++
+ #ifndef EM_X86_64
+ #define EM_X86_64 62
+ #endif
++
+ #ifndef EM_MIPS
+ #define EM_MIPS   8
+ #endif
++
+ #ifndef EM_AARCH64
+ #define EM_AARCH64 183
+ #endif
+@@ -33,24 +45,31 @@
+ #ifndef __AUDIT_ARCH_64BIT
+ #define __AUDIT_ARCH_64BIT 0x80000000
+ #endif
++
+ #ifndef __AUDIT_ARCH_LE
+ #define __AUDIT_ARCH_LE    0x40000000
+ #endif
++
+ #ifndef AUDIT_ARCH_ARM
+ #define AUDIT_ARCH_ARM    (EM_ARM|__AUDIT_ARCH_LE)
+ #endif
++
+ #ifndef AUDIT_ARCH_I386
+ #define AUDIT_ARCH_I386   (EM_386|__AUDIT_ARCH_LE)
+ #endif
++
+ #ifndef AUDIT_ARCH_X86_64
+ #define AUDIT_ARCH_X86_64 (EM_X86_64|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)
+ #endif
++
+ #ifndef AUDIT_ARCH_MIPSEL
+ #define AUDIT_ARCH_MIPSEL (EM_MIPS|__AUDIT_ARCH_LE)
+ #endif
++
+ #ifndef AUDIT_ARCH_MIPSEL64
+ #define AUDIT_ARCH_MIPSEL64 (EM_MIPS|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)
+ #endif
++
+ #ifndef AUDIT_ARCH_AARCH64
+ #define AUDIT_ARCH_AARCH64 (EM_AARCH64 | __AUDIT_ARCH_64BIT | __AUDIT_ARCH_LE)
+ #endif
+@@ -60,14 +79,33 @@
+ #define PR_SET_SECCOMP               22
+ #define PR_GET_SECCOMP               21
+ #endif
++
+ #ifndef PR_SET_NO_NEW_PRIVS
+ #define PR_SET_NO_NEW_PRIVS          38
+ #define PR_GET_NO_NEW_PRIVS          39
+ #endif
++
+ #ifndef IPC_64
+ #define IPC_64                   0x0100
+ #endif
+ 
++#ifndef PR_SET_SPECULATION_CTRL
++#define PR_SET_SPECULATION_CTRL 53
++#define PR_GET_SPECULATION_CTRL 52
++#endif
++
++#ifndef PR_SPEC_INDIRECT_BRANCH
++#define PR_SPEC_INDIRECT_BRANCH 1
++#endif
++
++#ifndef PR_SPEC_PRCTL
++#define PR_SPEC_PRCTL (1UL << 0)
++#endif
++
++#ifndef PR_SPEC_FORCE_DISABLE
++#define PR_SPEC_FORCE_DISABLE (1UL << 3)
++#endif
++
+ // In order to build will older tool chains, we currently have to avoid
+ // including <linux/seccomp.h>. Until that can be fixed (if ever). Rely on
+ // our own definitions of the seccomp kernel ABI.
+@@ -83,22 +121,101 @@
+ #ifndef SECCOMP_SET_MODE_FILTER
+ #define SECCOMP_SET_MODE_FILTER 1
+ #endif
++#ifndef SECCOMP_GET_NOTIF_SIZES
++#define SECCOMP_GET_NOTIF_SIZES 3
++#endif
++
+ #ifndef SECCOMP_FILTER_FLAG_TSYNC
+ #define SECCOMP_FILTER_FLAG_TSYNC 1
+ #endif
+ 
++#ifndef SECCOMP_FILTER_FLAG_SPEC_ALLOW
++#define SECCOMP_FILTER_FLAG_SPEC_ALLOW (1UL << 2)
++#endif
++
++#ifndef SECCOMP_FILTER_FLAG_NEW_LISTENER
++#define SECCOMP_FILTER_FLAG_NEW_LISTENER (1UL << 3)
++#endif
++
++#ifndef SECCOMP_FILTER_FLAG_TSYNC_ESRCH
++#define SECCOMP_FILTER_FLAG_TSYNC_ESRCH (1UL << 4)
++#endif
++
++#ifndef SECCOMP_ADDFD_FLAG_SETFD
++#define SECCOMP_ADDFD_FLAG_SETFD (1UL << 0)
++#endif
++
++// In the future, if we add fields to these structs and then access them, they
++// might be out-of-bounds on an older kernel. So before adding to these structs,
++// make sure to annotate them with a comment that it may be unsafe to access
++// those fields on older kernels.
++struct arch_seccomp_data {
++  int nr;
++  uint32_t arch;
++  uint64_t instruction_pointer;
++  uint64_t args[6];
++};
++
++struct seccomp_notif_sizes {
++  uint16_t seccomp_notif;
++  uint16_t seccomp_notif_resp;
++  uint16_t seccomp_data;
++};
++
++struct seccomp_notif {
++  uint64_t id;
++  uint32_t pid;
++  uint32_t flags;
++  struct arch_seccomp_data data;
++};
++
++struct seccomp_notif_resp {
++  uint64_t id;
++  int64_t val;
++  int32_t error;
++  uint32_t flags;
++};
++
++struct seccomp_notif_addfd {
++  uint64_t id;
++  uint32_t flags;
++  uint32_t srcfd;
++  uint32_t newfd;
++  uint32_t newfd_flags;
++};
++
++// sys/ioctl.h is not available in pnacl toolchain.
++#if !defined(OS_NACL_NONSFI)
++#define SECCOMP_IOC_MAGIC '!'
++#define SECCOMP_IO(nr) _IO(SECCOMP_IOC_MAGIC, nr)
++#define SECCOMP_IOR(nr, type) _IOR(SECCOMP_IOC_MAGIC, nr, type)
++#define SECCOMP_IOW(nr, type) _IOW(SECCOMP_IOC_MAGIC, nr, type)
++#define SECCOMP_IOWR(nr, type) _IOWR(SECCOMP_IOC_MAGIC, nr, type)
++
++// Flags for seccomp notification fd ioctl.
++#define SECCOMP_IOCTL_NOTIF_RECV SECCOMP_IOWR(0, struct seccomp_notif)
++#define SECCOMP_IOCTL_NOTIF_SEND SECCOMP_IOWR(1, struct seccomp_notif_resp)
++// Note: SECCOMP_IOCTL_NOTIF_ID_VALID is now defined with SECCOMP_IOW, but
++// kernels are expected to support the (now incorrect) ioctl number for the
++// foreseeable future.
++#define SECCOMP_IOCTL_NOTIF_ID_VALID SECCOMP_IOR(2, uint64_t)
++// On success, the return value is the remote process's added fd number
++#define SECCOMP_IOCTL_NOTIF_ADDFD SECCOMP_IOW(3, struct seccomp_notif_addfd)
++#endif  // !defined(OS_NACL_NONSFI)
++
+ #ifndef SECCOMP_RET_KILL
+ // Return values supported for BPF filter programs. Please note that the
+ // "illegal" SECCOMP_RET_INVALID is not supported by the kernel, should only
+ // ever be used internally, and would result in the kernel killing our process.
+-#define SECCOMP_RET_KILL    0x00000000U  // Kill the task immediately
+-#define SECCOMP_RET_INVALID 0x00010000U  // Illegal return value
+-#define SECCOMP_RET_TRAP    0x00030000U  // Disallow and force a SIGSYS
+-#define SECCOMP_RET_ERRNO   0x00050000U  // Returns an errno
+-#define SECCOMP_RET_TRACE   0x7ff00000U  // Pass to a tracer or disallow
+-#define SECCOMP_RET_ALLOW   0x7fff0000U  // Allow
+-#define SECCOMP_RET_ACTION  0xffff0000U  // Masks for the return value
+-#define SECCOMP_RET_DATA    0x0000ffffU  //   sections
++#define SECCOMP_RET_KILL 0x00000000U        // Kill the task immediately
++#define SECCOMP_RET_INVALID 0x00010000U     // Illegal return value
++#define SECCOMP_RET_TRAP 0x00030000U        // Disallow and force a SIGSYS
++#define SECCOMP_RET_ERRNO 0x00050000U       // Returns an errno
++#define SECCOMP_RET_USER_NOTIF 0x7fc00000U  // Notifies userspace
++#define SECCOMP_RET_TRACE 0x7ff00000U       // Pass to a tracer or disallow
++#define SECCOMP_RET_ALLOW 0x7fff0000U       // Allow
++#define SECCOMP_RET_ACTION 0xffff0000U      // Masks for the return value
++#define SECCOMP_RET_DATA 0x0000ffffU        //   sections
+ #else
+ #define SECCOMP_RET_INVALID 0x00010000U  // Illegal return value
+ #endif
+diff --color -rupN ./a/linux/system_headers/linux_signal.h ./b/linux/system_headers/linux_signal.h
+--- ./a/linux/system_headers/linux_signal.h	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/system_headers/linux_signal.h	2022-05-23 13:38:40.000000000 +0200
+@@ -7,6 +7,8 @@
+ 
+ #include <stdint.h>
+ 
++#include "build/build_config.h"
++
+ // NOTE: On some toolchains, signal related ABI is incompatible with Linux's
+ // (not undefined, but defined different values and in different memory
+ // layouts). So, fill the gap here.
+@@ -108,22 +110,17 @@ static_assert(LINUX_SIG_DFL == SIG_DFL,
+ 
+ typedef siginfo_t LinuxSigInfo;
+ 
+-#if defined(__ANDROID__)
+-// Android's signal.h doesn't define ucontext etc.
+-#include "sandbox/linux/system_headers/linux_ucontext.h"
+-#endif  // defined(__ANDROID__)
+-
+ #endif  // !defined(__native_client_nonsfi__)
+ 
+ // struct sigset_t is different size in PNaCl from the Linux's.
+-#if defined(__mips32__)
++#if (defined(ARCH_CPU_MIPS_FAMILY) && defined(ARCH_CPU_32_BITS))
+ #if !defined(_NSIG_WORDS)
+ #define _NSIG_WORDS 4
+ #endif
+ struct LinuxSigSet {
+   unsigned long sig[_NSIG_WORDS];
+ };
+-#elif defined(__mips64__)
++#elif defined(ARCH_CPU_MIPS_FAMILY) && defined(ARCH_CPU_64_BITS)
+ #if !defined(_NSIG_WORDS)
+ #define _NSIG_WORDS 2
+ #endif
+diff --color -rupN ./a/linux/system_headers/linux_stat.h ./b/linux/system_headers/linux_stat.h
+--- ./a/linux/system_headers/linux_stat.h	1970-01-01 01:00:00.000000000 +0100
++++ ./b/linux/system_headers/linux_stat.h	2022-05-23 13:38:40.000000000 +0200
+@@ -0,0 +1,192 @@
++// Copyright 2021 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef SANDBOX_LINUX_SYSTEM_HEADERS_LINUX_STAT_H_
++#define SANDBOX_LINUX_SYSTEM_HEADERS_LINUX_STAT_H_
++
++#include <stdint.h>
++
++#include "build/build_config.h"
++#include "sandbox/linux/system_headers/linux_syscalls.h"
++
++#if defined(ARCH_CPU_MIPS_FAMILY)
++#if defined(ARCH_CPU_64_BITS)
++struct kernel_stat {
++#else
++struct kernel_stat64 {
++#endif
++  unsigned st_dev;
++  unsigned __pad0[3];
++  unsigned long long st_ino;
++  unsigned st_mode;
++  unsigned st_nlink;
++  unsigned st_uid;
++  unsigned st_gid;
++  unsigned st_rdev;
++  unsigned __pad1[3];
++  long long st_size;
++  unsigned st_atime_;
++  unsigned st_atime_nsec_;
++  unsigned st_mtime_;
++  unsigned st_mtime_nsec_;
++  unsigned st_ctime_;
++  unsigned st_ctime_nsec_;
++  unsigned st_blksize;
++  unsigned __pad2;
++  unsigned long long st_blocks;
++};
++#else
++struct kernel_stat64 {
++  unsigned long long st_dev;
++  unsigned char __pad0[4];
++  unsigned __st_ino;
++  unsigned st_mode;
++  unsigned st_nlink;
++  unsigned st_uid;
++  unsigned st_gid;
++  unsigned long long st_rdev;
++  unsigned char __pad3[4];
++  long long st_size;
++  unsigned st_blksize;
++  unsigned long long st_blocks;
++  unsigned st_atime_;
++  unsigned st_atime_nsec_;
++  unsigned st_mtime_;
++  unsigned st_mtime_nsec_;
++  unsigned st_ctime_;
++  unsigned st_ctime_nsec_;
++  unsigned long long st_ino;
++};
++#endif
++
++#if defined(__i386__) || defined(__ARM_ARCH_3__) || defined(__ARM_EABI__)
++struct kernel_stat {
++  /* The kernel headers suggest that st_dev and st_rdev should be 32bit
++   * quantities encoding 12bit major and 20bit minor numbers in an interleaved
++   * format. In reality, we do not see useful data in the top bits. So,
++   * we'll leave the padding in here, until we find a better solution.
++   */
++  unsigned short st_dev;
++  short pad1;
++  unsigned st_ino;
++  unsigned short st_mode;
++  unsigned short st_nlink;
++  unsigned short st_uid;
++  unsigned short st_gid;
++  unsigned short st_rdev;
++  short pad2;
++  unsigned st_size;
++  unsigned st_blksize;
++  unsigned st_blocks;
++  unsigned st_atime_;
++  unsigned st_atime_nsec_;
++  unsigned st_mtime_;
++  unsigned st_mtime_nsec_;
++  unsigned st_ctime_;
++  unsigned st_ctime_nsec_;
++  unsigned __unused4;
++  unsigned __unused5;
++};
++#elif defined(__x86_64__)
++struct kernel_stat {
++  uint64_t st_dev;
++  uint64_t st_ino;
++  uint64_t st_nlink;
++  unsigned st_mode;
++  unsigned st_uid;
++  unsigned st_gid;
++  unsigned __pad0;
++  uint64_t st_rdev;
++  int64_t st_size;
++  int64_t st_blksize;
++  int64_t st_blocks;
++  uint64_t st_atime_;
++  uint64_t st_atime_nsec_;
++  uint64_t st_mtime_;
++  uint64_t st_mtime_nsec_;
++  uint64_t st_ctime_;
++  uint64_t st_ctime_nsec_;
++  int64_t __unused4[3];
++};
++#elif (defined(ARCH_CPU_MIPS_FAMILY) && defined(ARCH_CPU_32_BITS))
++struct kernel_stat {
++  unsigned st_dev;
++  int st_pad1[3];
++  unsigned st_ino;
++  unsigned st_mode;
++  unsigned st_nlink;
++  unsigned st_uid;
++  unsigned st_gid;
++  unsigned st_rdev;
++  int st_pad2[2];
++  long st_size;
++  int st_pad3;
++  long st_atime_;
++  long st_atime_nsec_;
++  long st_mtime_;
++  long st_mtime_nsec_;
++  long st_ctime_;
++  long st_ctime_nsec_;
++  int st_blksize;
++  int st_blocks;
++  int st_pad4[14];
++};
++#elif defined(__aarch64__)
++struct kernel_stat {
++  unsigned long st_dev;
++  unsigned long st_ino;
++  unsigned int st_mode;
++  unsigned int st_nlink;
++  unsigned int st_uid;
++  unsigned int st_gid;
++  unsigned long st_rdev;
++  unsigned long __pad1;
++  long st_size;
++  int st_blksize;
++  int __pad2;
++  long st_blocks;
++  long st_atime_;
++  unsigned long st_atime_nsec_;
++  long st_mtime_;
++  unsigned long st_mtime_nsec_;
++  long st_ctime_;
++  unsigned long st_ctime_nsec_;
++  unsigned int __unused4;
++  unsigned int __unused5;
++};
++#endif
++
++#if !defined(AT_EMPTY_PATH)
++#define AT_EMPTY_PATH 0x1000
++#endif
++
++// On 32-bit systems, we default to the 64-bit stat struct like libc
++// implementations do. Otherwise we default to the normal stat struct which is
++// already 64-bit.
++// These defines make it easy to call the right syscall to fill out a 64-bit
++// stat struct, which is the default in libc implementations but requires
++// different syscall names on 32 and 64-bit platforms.
++#if defined(__NR_fstatat64)
++
++namespace sandbox {
++using default_stat_struct = struct kernel_stat64;
++}  // namespace sandbox
++
++#define __NR_fstatat_default __NR_fstatat64
++#define __NR_fstat_default __NR_fstat64
++
++#elif defined(__NR_newfstatat)
++
++namespace sandbox {
++using default_stat_struct = struct kernel_stat;
++}  // namespace sandbox
++
++#define __NR_fstatat_default __NR_newfstatat
++#define __NR_fstat_default __NR_fstat
++
++#else
++#error "one of fstatat64 and newfstatat must be defined"
++#endif
++
++#endif  // SANDBOX_LINUX_SYSTEM_HEADERS_LINUX_STAT_H_
+diff --color -rupN ./a/linux/system_headers/linux_syscalls.h ./b/linux/system_headers/linux_syscalls.h
+--- ./a/linux/system_headers/linux_syscalls.h	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/system_headers/linux_syscalls.h	2022-05-23 13:38:40.000000000 +0200
+@@ -9,6 +9,8 @@
+ #ifndef SANDBOX_LINUX_SYSTEM_HEADERS_LINUX_SYSCALLS_H_
+ #define SANDBOX_LINUX_SYSTEM_HEADERS_LINUX_SYSCALLS_H_
+ 
++#include "build/build_config.h"
++
+ #if defined(__x86_64__)
+ #include "sandbox/linux/system_headers/x86_64_linux_syscalls.h"
+ #endif
+@@ -21,11 +23,11 @@
+ #include "sandbox/linux/system_headers/arm_linux_syscalls.h"
+ #endif
+ 
+-#if defined(__mips32__)
++#if (defined(ARCH_CPU_MIPS_FAMILY) && defined(ARCH_CPU_32_BITS))
+ #include "sandbox/linux/system_headers/mips_linux_syscalls.h"
+ #endif
+ 
+-#if defined(__mips64__)
++#if defined(ARCH_CPU_MIPS_FAMILY) && defined(ARCH_CPU_64_BITS)
+ #include "sandbox/linux/system_headers/mips64_linux_syscalls.h"
+ #endif
+ 
+diff --color -rupN ./a/linux/system_headers/linux_time.h ./b/linux/system_headers/linux_time.h
+--- ./a/linux/system_headers/linux_time.h	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/system_headers/linux_time.h	2022-05-23 13:38:40.000000000 +0200
+@@ -11,10 +11,40 @@
+ #define CPUCLOCK_CLOCK_MASK 3
+ #endif
+ 
++#if !defined(CPUCLOCK_PROF)
++#define CPUCLOCK_PROF 0
++#endif
++
++#if !defined(CPUCLOCK_VIRT)
++#define CPUCLOCK_VIRT 1
++#endif
++
++#if !defined(CPUCLOCK_SCHED)
++#define CPUCLOCK_SCHED 2
++#endif
++
++#if !defined(CPUCLOCK_PERTHREAD_MASK)
++#define CPUCLOCK_PERTHREAD_MASK 4
++#endif
++
++#if !defined(MAKE_PROCESS_CPUCLOCK)
++#define MAKE_PROCESS_CPUCLOCK(pid, clock) \
++  ((int)(~(unsigned)(pid) << 3) | (int)(clock))
++#endif
++
++#if !defined(MAKE_THREAD_CPUCLOCK)
++#define MAKE_THREAD_CPUCLOCK(tid, clock) \
++  ((int)(~(unsigned)(tid) << 3) | (int)((clock) | CPUCLOCK_PERTHREAD_MASK))
++#endif
++
+ #if !defined(CLOCKFD)
+ #define CLOCKFD 3
+ #endif
+ 
++#if !defined(CLOCK_MONOTONIC_RAW)
++#define CLOCK_MONOTONIC_RAW 4
++#endif
++
+ #if !defined(CLOCK_REALTIME_COARSE)
+ #define CLOCK_REALTIME_COARSE 5
+ #endif
+@@ -23,4 +53,8 @@
+ #define CLOCK_MONOTONIC_COARSE 6
+ #endif
+ 
++#if !defined(CLOCK_BOOTTIME)
++#define CLOCK_BOOTTIME 7
++#endif
++
+ #endif  // SANDBOX_LINUX_SYSTEM_HEADERS_LINUX_TIME_H_
+diff --color -rupN ./a/linux/system_headers/linux_ucontext.h ./b/linux/system_headers/linux_ucontext.h
+--- ./a/linux/system_headers/linux_ucontext.h	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/system_headers/linux_ucontext.h	2022-05-23 13:38:40.000000000 +0200
+@@ -5,26 +5,18 @@
+ #ifndef SANDBOX_LINUX_SYSTEM_HEADERS_LINUX_UCONTEXT_H_
+ #define SANDBOX_LINUX_SYSTEM_HEADERS_LINUX_UCONTEXT_H_
+ 
+-#if defined(__ANDROID__) || defined(__native_client_nonsfi__)
++#if defined(__native_client_nonsfi__)
+ 
+ #if defined(__arm__)
+ #include "sandbox/linux/system_headers/arm_linux_ucontext.h"
+ #elif defined(__i386__)
+ #include "sandbox/linux/system_headers/i386_linux_ucontext.h"
+-#elif defined(__x86_64__)
+-#include "sandbox/linux/system_headers/x86_64_linux_ucontext.h"
+-#elif defined(__mips32__)
+-#include "sandbox/linux/system_headers/mips_linux_ucontext.h"
+-#elif defined(__mips64__)
+-#include "sandbox/linux/system_headers/mips64_linux_ucontext.h"
+-#elif defined(__aarch64__)
+-#include "sandbox/linux/system_headers/arm64_linux_ucontext.h"
+ #else
+-#error "No support for your architecture in Android or PNaCl header"
++#error "No support for your architecture in PNaCl header"
+ #endif
+ 
+-#else  // defined(__ANDROID__) || defined(__native_client_nonsfi__)
+-#error "The header file included on non Android and non PNaCl."
+-#endif  // defined(__ANDROID__) || defined(__native_client_nonsfi__)
++#else  // defined(__native_client_nonsfi__)
++#error "The header file included on non PNaCl."
++#endif  // defined(__native_client_nonsfi__)
+ 
+ #endif  // SANDBOX_LINUX_SYSTEM_HEADERS_LINUX_UCONTEXT_H_
+diff --color -rupN ./a/linux/system_headers/mips64_linux_syscalls.h ./b/linux/system_headers/mips64_linux_syscalls.h
+--- ./a/linux/system_headers/mips64_linux_syscalls.h	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/system_headers/mips64_linux_syscalls.h	2022-05-23 13:38:40.000000000 +0200
+@@ -1271,4 +1271,148 @@
+ #define __NR_memfd_create (__NR_Linux + 314)
+ #endif
+ 
++#if !defined(__NR_bpf)
++#define __NR_bpf (__NR_Linux + 315)
++#endif
++
++#if !defined(__NR_execveat)
++#define __NR_execveat (__NR_Linux + 316)
++#endif
++
++#if !defined(__NR_userfaultfd)
++#define __NR_userfaultfd (__NR_Linux + 317)
++#endif
++
++#if !defined(__NR_membarrier)
++#define __NR_membarrier (__NR_Linux + 318)
++#endif
++
++#if !defined(__NR_mlock2)
++#define __NR_mlock2 (__NR_Linux + 319)
++#endif
++
++#if !defined(__NR_copy_file_range)
++#define __NR_copy_file_range (__NR_Linux + 320)
++#endif
++
++#if !defined(__NR_preadv2)
++#define __NR_preadv2 (__NR_Linux + 321)
++#endif
++
++#if !defined(__NR_pwritev2)
++#define __NR_pwritev2 (__NR_Linux + 322)
++#endif
++
++#if !defined(__NR_pkey_mprotect)
++#define __NR_pkey_mprotect (__NR_Linux + 323)
++#endif
++
++#if !defined(__NR_pkey_alloc)
++#define __NR_pkey_alloc (__NR_Linux + 324)
++#endif
++
++#if !defined(__NR_pkey_free)
++#define __NR_pkey_free (__NR_Linux + 325)
++#endif
++
++#if !defined(__NR_statx)
++#define __NR_statx (__NR_Linux + 326)
++#endif
++
++#if !defined(__NR_rseq)
++#define __NR_rseq (__NR_Linux + 327)
++#endif
++
++#if !defined(__NR_io_pgetevents)
++#define __NR_io_pgetevents (__NR_Linux + 328)
++#endif
++
++#if !defined(__NR_pidfd_send_signal)
++#define __NR_pidfd_send_signal (__NR_Linux + 424)
++#endif
++
++#if !defined(__NR_io_uring_setup)
++#define __NR_io_uring_setup (__NR_Linux + 425)
++#endif
++
++#if !defined(__NR_io_uring_enter)
++#define __NR_io_uring_enter (__NR_Linux + 426)
++#endif
++
++#if !defined(__NR_io_uring_register)
++#define __NR_io_uring_register (__NR_Linux + 427)
++#endif
++
++#if !defined(__NR_open_tree)
++#define __NR_open_tree (__NR_Linux + 428)
++#endif
++
++#if !defined(__NR_move_mount)
++#define __NR_move_mount (__NR_Linux + 429)
++#endif
++
++#if !defined(__NR_fsopen)
++#define __NR_fsopen (__NR_Linux + 430)
++#endif
++
++#if !defined(__NR_fsconfig)
++#define __NR_fsconfig (__NR_Linux + 431)
++#endif
++
++#if !defined(__NR_fsmount)
++#define __NR_fsmount (__NR_Linux + 432)
++#endif
++
++#if !defined(__NR_fspick)
++#define __NR_fspick (__NR_Linux + 433)
++#endif
++
++#if !defined(__NR_pidfd_open)
++#define __NR_pidfd_open (__NR_Linux + 434)
++#endif
++
++#if !defined(__NR_clone3)
++#define __NR_clone3 (__NR_Linux + 435)
++#endif
++
++#if !defined(__NR_close_range)
++#define __NR_close_range (__NR_Linux + 436)
++#endif
++
++#if !defined(__NR_openat2)
++#define __NR_openat2 (__NR_Linux + 437)
++#endif
++
++#if !defined(__NR_pidfd_getfd)
++#define __NR_pidfd_getfd (__NR_Linux + 438)
++#endif
++
++#if !defined(__NR_faccessat2)
++#define __NR_faccessat2 (__NR_Linux + 439)
++#endif
++
++#if !defined(__NR_process_madvise)
++#define __NR_process_madvise (__NR_Linux + 440)
++#endif
++
++#if !defined(__NR_epoll_pwait2)
++#define __NR_epoll_pwait2 (__NR_Linux + 441)
++#endif
++
++#if !defined(__NR_mount_setattr)
++#define __NR_mount_setattr (__NR_Linux + 442)
++#endif
++
++#if !defined(__NR_landlock_create_ruleset)
++#define __NR_landlock_create_ruleset (__NR_Linux + 444)
++#endif
++
++#if !defined(__NR_landlock_add_rule)
++#define __NR_landlock_add_rule (__NR_Linux + 445)
++#endif
++
++#if !defined(__NR_landlock_restrict_self)
++#define __NR_landlock_restrict_self (__NR_Linux + 446)
++#endif
++
+ #endif  // SANDBOX_LINUX_SYSTEM_HEADERS_MIPS64_LINUX_SYSCALLS_H_
+diff --color -rupN ./a/linux/system_headers/mips_linux_syscalls.h ./b/linux/system_headers/mips_linux_syscalls.h
+--- ./a/linux/system_headers/mips_linux_syscalls.h	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/system_headers/mips_linux_syscalls.h	2022-05-23 13:38:40.000000000 +0200
+@@ -1433,4 +1433,268 @@
+ #define __NR_memfd_create (__NR_Linux + 354)
+ #endif
+ 
++#if !defined(__NR_landlock_create_ruleset)
++#define __NR_landlock_create_ruleset (__NR_Linux + 444)
++#endif
++
++#if !defined(__NR_landlock_add_rule)
++#define __NR_landlock_add_rule (__NR_Linux + 445)
++#endif
++
++#if !defined(__NR_landlock_restrict_self)
++#define __NR_landlock_restrict_self (__NR_Linux + 446)
++#endif
++
++#if !defined(__NR_bpf)
++#define __NR_bpf (__NR_Linux + 355)
++#endif
++
++#if !defined(__NR_execveat)
++#define __NR_execveat (__NR_Linux + 356)
++#endif
++
++#if !defined(__NR_userfaultfd)
++#define __NR_userfaultfd (__NR_Linux + 357)
++#endif
++
++#if !defined(__NR_membarrier)
++#define __NR_membarrier (__NR_Linux + 358)
++#endif
++
++#if !defined(__NR_mlock2)
++#define __NR_mlock2 (__NR_Linux + 359)
++#endif
++
++#if !defined(__NR_copy_file_range)
++#define __NR_copy_file_range (__NR_Linux + 360)
++#endif
++
++#if !defined(__NR_preadv2)
++#define __NR_preadv2 (__NR_Linux + 361)
++#endif
++
++#if !defined(__NR_pwritev2)
++#define __NR_pwritev2 (__NR_Linux + 362)
++#endif
++
++#if !defined(__NR_pkey_mprotect)
++#define __NR_pkey_mprotect (__NR_Linux + 363)
++#endif
++
++#if !defined(__NR_pkey_alloc)
++#define __NR_pkey_alloc (__NR_Linux + 364)
++#endif
++
++#if !defined(__NR_pkey_free)
++#define __NR_pkey_free (__NR_Linux + 365)
++#endif
++
++#if !defined(__NR_statx)
++#define __NR_statx (__NR_Linux + 366)
++#endif
++
++#if !defined(__NR_rseq)
++#define __NR_rseq (__NR_Linux + 367)
++#endif
++
++#if !defined(__NR_io_pgetevents)
++#define __NR_io_pgetevents (__NR_Linux + 368)
++#endif
++
++#if !defined(__NR_semget)
++#define __NR_semget (__NR_Linux + 393)
++#endif
++
++#if !defined(__NR_semctl)
++#define __NR_semctl (__NR_Linux + 394)
++#endif
++
++#if !defined(__NR_shmget)
++#define __NR_shmget (__NR_Linux + 395)
++#endif
++
++#if !defined(__NR_shmctl)
++#define __NR_shmctl (__NR_Linux + 396)
++#endif
++
++#if !defined(__NR_shmat)
++#define __NR_shmat (__NR_Linux + 397)
++#endif
++
++#if !defined(__NR_shmdt)
++#define __NR_shmdt (__NR_Linux + 398)
++#endif
++
++#if !defined(__NR_msgget)
++#define __NR_msgget (__NR_Linux + 399)
++#endif
++
++#if !defined(__NR_msgsnd)
++#define __NR_msgsnd (__NR_Linux + 400)
++#endif
++
++#if !defined(__NR_msgrcv)
++#define __NR_msgrcv (__NR_Linux + 401)
++#endif
++
++#if !defined(__NR_msgctl)
++#define __NR_msgctl (__NR_Linux + 402)
++#endif
++
++#if !defined(__NR_clock_gettime64)
++#define __NR_clock_gettime64 (__NR_Linux + 403)
++#endif
++
++#if !defined(__NR_clock_settime64)
++#define __NR_clock_settime64 (__NR_Linux + 404)
++#endif
++
++#if !defined(__NR_clock_adjtime64)
++#define __NR_clock_adjtime64 (__NR_Linux + 405)
++#endif
++
++#if !defined(__NR_clock_getres_time64)
++#define __NR_clock_getres_time64 (__NR_Linux + 406)
++#endif
++
++#if !defined(__NR_clock_nanosleep_time64)
++#define __NR_clock_nanosleep_time64 (__NR_Linux + 407)
++#endif
++
++#if !defined(__NR_timer_gettime64)
++#define __NR_timer_gettime64 (__NR_Linux + 408)
++#endif
++
++#if !defined(__NR_timer_settime64)
++#define __NR_timer_settime64 (__NR_Linux + 409)
++#endif
++
++#if !defined(__NR_timerfd_gettime64)
++#define __NR_timerfd_gettime64 (__NR_Linux + 410)
++#endif
++
++#if !defined(__NR_timerfd_settime64)
++#define __NR_timerfd_settime64 (__NR_Linux + 411)
++#endif
++
++#if !defined(__NR_utimensat_time64)
++#define __NR_utimensat_time64 (__NR_Linux + 412)
++#endif
++
++#if !defined(__NR_pselect6_time64)
++#define __NR_pselect6_time64 (__NR_Linux + 413)
++#endif
++
++#if !defined(__NR_ppoll_time64)
++#define __NR_ppoll_time64 (__NR_Linux + 414)
++#endif
++
++#if !defined(__NR_io_pgetevents_time64)
++#define __NR_io_pgetevents_time64 (__NR_Linux + 416)
++#endif
++
++#if !defined(__NR_recvmmsg_time64)
++#define __NR_recvmmsg_time64 (__NR_Linux + 417)
++#endif
++
++#if !defined(__NR_mq_timedsend_time64)
++#define __NR_mq_timedsend_time64 (__NR_Linux + 418)
++#endif
++
++#if !defined(__NR_mq_timedreceive_time64)
++#define __NR_mq_timedreceive_time64 (__NR_Linux + 419)
++#endif
++
++#if !defined(__NR_semtimedop_time64)
++#define __NR_semtimedop_time64 (__NR_Linux + 420)
++#endif
++
++#if !defined(__NR_rt_sigtimedwait_time64)
++#define __NR_rt_sigtimedwait_time64 (__NR_Linux + 421)
++#endif
++
++#if !defined(__NR_futex_time64)
++#define __NR_futex_time64 (__NR_Linux + 422)
++#endif
++
++#if !defined(__NR_sched_rr_get_interval_time64)
++#define __NR_sched_rr_get_interval_time64 (__NR_Linux + 423)
++#endif
++
++#if !defined(__NR_pidfd_send_signal)
++#define __NR_pidfd_send_signal (__NR_Linux + 424)
++#endif
++
++#if !defined(__NR_io_uring_setup)
++#define __NR_io_uring_setup (__NR_Linux + 425)
++#endif
++
++#if !defined(__NR_io_uring_enter)
++#define __NR_io_uring_enter (__NR_Linux + 426)
++#endif
++
++#if !defined(__NR_io_uring_register)
++#define __NR_io_uring_register (__NR_Linux + 427)
++#endif
++
++#if !defined(__NR_open_tree)
++#define __NR_open_tree (__NR_Linux + 428)
++#endif
++
++#if !defined(__NR_move_mount)
++#define __NR_move_mount (__NR_Linux + 429)
++#endif
++
++#if !defined(__NR_fsopen)
++#define __NR_fsopen (__NR_Linux + 430)
++#endif
++
++#if !defined(__NR_fsconfig)
++#define __NR_fsconfig (__NR_Linux + 431)
++#endif
++
++#if !defined(__NR_fsmount)
++#define __NR_fsmount (__NR_Linux + 432)
++#endif
++
++#if !defined(__NR_fspick)
++#define __NR_fspick (__NR_Linux + 433)
++#endif
++
++#if !defined(__NR_pidfd_open)
++#define __NR_pidfd_open (__NR_Linux + 434)
++#endif
++
++#if !defined(__NR_clone3)
++#define __NR_clone3 (__NR_Linux + 435)
++#endif
++
++#if !defined(__NR_close_range)
++#define __NR_close_range (__NR_Linux + 436)
++#endif
++
++#if !defined(__NR_openat2)
++#define __NR_openat2 (__NR_Linux + 437)
++#endif
++
++#if !defined(__NR_pidfd_getfd)
++#define __NR_pidfd_getfd (__NR_Linux + 438)
++#endif
++
++#if !defined(__NR_faccessat2)
++#define __NR_faccessat2 (__NR_Linux + 439)
++#endif
++
++#if !defined(__NR_process_madvise)
++#define __NR_process_madvise (__NR_Linux + 440)
++#endif
++
++#if !defined(__NR_epoll_pwait2)
++#define __NR_epoll_pwait2 (__NR_Linux + 441)
++#endif
++
++#if !defined(__NR_mount_setattr)
++#define __NR_mount_setattr (__NR_Linux + 442)
++#endif
++
+ #endif  // SANDBOX_LINUX_SYSTEM_HEADERS_MIPS_LINUX_SYSCALLS_H_
+diff --color -rupN ./a/linux/system_headers/x86_32_linux_syscalls.h ./b/linux/system_headers/x86_32_linux_syscalls.h
+--- ./a/linux/system_headers/x86_32_linux_syscalls.h	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/system_headers/x86_32_linux_syscalls.h	2022-05-23 13:38:40.000000000 +0200
+@@ -1422,5 +1422,333 @@
+ #define __NR_memfd_create 356
+ #endif
+ 
++#if !defined(__NR_bpf)
++#define __NR_bpf 357
++#endif
++
++#if !defined(__NR_execveat)
++#define __NR_execveat 358
++#endif
++
++#if !defined(__NR_socket)
++#define __NR_socket 359
++#endif
++
++#if !defined(__NR_socketpair)
++#define __NR_socketpair 360
++#endif
++
++#if !defined(__NR_bind)
++#define __NR_bind 361
++#endif
++
++#if !defined(__NR_connect)
++#define __NR_connect 362
++#endif
++
++#if !defined(__NR_listen)
++#define __NR_listen 363
++#endif
++
++#if !defined(__NR_accept4)
++#define __NR_accept4 364
++#endif
++
++#if !defined(__NR_getsockopt)
++#define __NR_getsockopt 365
++#endif
++
++#if !defined(__NR_setsockopt)
++#define __NR_setsockopt 366
++#endif
++
++#if !defined(__NR_getsockname)
++#define __NR_getsockname 367
++#endif
++
++#if !defined(__NR_getpeername)
++#define __NR_getpeername 368
++#endif
++
++#if !defined(__NR_sendto)
++#define __NR_sendto 369
++#endif
++
++#if !defined(__NR_sendmsg)
++#define __NR_sendmsg 370
++#endif
++
++#if !defined(__NR_recvfrom)
++#define __NR_recvfrom 371
++#endif
++
++#if !defined(__NR_recvmsg)
++#define __NR_recvmsg 372
++#endif
++
++#if !defined(__NR_shutdown)
++#define __NR_shutdown 373
++#endif
++
++#if !defined(__NR_userfaultfd)
++#define __NR_userfaultfd 374
++#endif
++
++#if !defined(__NR_membarrier)
++#define __NR_membarrier 375
++#endif
++
++#if !defined(__NR_mlock2)
++#define __NR_mlock2 376
++#endif
++
++#if !defined(__NR_copy_file_range)
++#define __NR_copy_file_range 377
++#endif
++
++#if !defined(__NR_preadv2)
++#define __NR_preadv2 378
++#endif
++
++#if !defined(__NR_pwritev2)
++#define __NR_pwritev2 379
++#endif
++
++#if !defined(__NR_pkey_mprotect)
++#define __NR_pkey_mprotect 380
++#endif
++
++#if !defined(__NR_pkey_alloc)
++#define __NR_pkey_alloc 381
++#endif
++
++#if !defined(__NR_pkey_free)
++#define __NR_pkey_free 382
++#endif
++
++#if !defined(__NR_statx)
++#define __NR_statx 383
++#endif
++
++#if !defined(__NR_arch_prctl)
++#define __NR_arch_prctl 384
++#endif
++
++#if !defined(__NR_io_pgetevents)
++#define __NR_io_pgetevents 385
++#endif
++
++#if !defined(__NR_rseq)
++#define __NR_rseq 386
++#endif
++
++#if !defined(__NR_semget)
++#define __NR_semget 393
++#endif
++
++#if !defined(__NR_semctl)
++#define __NR_semctl 394
++#endif
++
++#if !defined(__NR_shmget)
++#define __NR_shmget 395
++#endif
++
++#if !defined(__NR_shmctl)
++#define __NR_shmctl 396
++#endif
++
++#if !defined(__NR_shmat)
++#define __NR_shmat 397
++#endif
++
++#if !defined(__NR_shmdt)
++#define __NR_shmdt 398
++#endif
++
++#if !defined(__NR_msgget)
++#define __NR_msgget 399
++#endif
++
++#if !defined(__NR_msgsnd)
++#define __NR_msgsnd 400
++#endif
++
++#if !defined(__NR_msgrcv)
++#define __NR_msgrcv 401
++#endif
++
++#if !defined(__NR_msgctl)
++#define __NR_msgctl 402
++#endif
++
++#if !defined(__NR_clock_gettime64)
++#define __NR_clock_gettime64 403
++#endif
++
++#if !defined(__NR_clock_settime64)
++#define __NR_clock_settime64 404
++#endif
++
++#if !defined(__NR_clock_adjtime64)
++#define __NR_clock_adjtime64 405
++#endif
++
++#if !defined(__NR_clock_getres_time64)
++#define __NR_clock_getres_time64 406
++#endif
++
++#if !defined(__NR_clock_nanosleep_time64)
++#define __NR_clock_nanosleep_time64 407
++#endif
++
++#if !defined(__NR_timer_gettime64)
++#define __NR_timer_gettime64 408
++#endif
++
++#if !defined(__NR_timer_settime64)
++#define __NR_timer_settime64 409
++#endif
++
++#if !defined(__NR_timerfd_gettime64)
++#define __NR_timerfd_gettime64 410
++#endif
++
++#if !defined(__NR_timerfd_settime64)
++#define __NR_timerfd_settime64 411
++#endif
++
++#if !defined(__NR_utimensat_time64)
++#define __NR_utimensat_time64 412
++#endif
++
++#if !defined(__NR_pselect6_time64)
++#define __NR_pselect6_time64 413
++#endif
++
++#if !defined(__NR_ppoll_time64)
++#define __NR_ppoll_time64 414
++#endif
++
++#if !defined(__NR_io_pgetevents_time64)
++#define __NR_io_pgetevents_time64 416
++#endif
++
++#if !defined(__NR_recvmmsg_time64)
++#define __NR_recvmmsg_time64 417
++#endif
++
++#if !defined(__NR_mq_timedsend_time64)
++#define __NR_mq_timedsend_time64 418
++#endif
++
++#if !defined(__NR_mq_timedreceive_time64)
++#define __NR_mq_timedreceive_time64 419
++#endif
++
++#if !defined(__NR_semtimedop_time64)
++#define __NR_semtimedop_time64 420
++#endif
++
++#if !defined(__NR_rt_sigtimedwait_time64)
++#define __NR_rt_sigtimedwait_time64 421
++#endif
++
++#if !defined(__NR_futex_time64)
++#define __NR_futex_time64 422
++#endif
++
++#if !defined(__NR_sched_rr_get_interval_time64)
++#define __NR_sched_rr_get_interval_time64 423
++#endif
++
++#if !defined(__NR_pidfd_send_signal)
++#define __NR_pidfd_send_signal 424
++#endif
++
++#if !defined(__NR_io_uring_setup)
++#define __NR_io_uring_setup 425
++#endif
++
++#if !defined(__NR_io_uring_enter)
++#define __NR_io_uring_enter 426
++#endif
++
++#if !defined(__NR_io_uring_register)
++#define __NR_io_uring_register 427
++#endif
++
++#if !defined(__NR_open_tree)
++#define __NR_open_tree 428
++#endif
++
++#if !defined(__NR_move_mount)
++#define __NR_move_mount 429
++#endif
++
++#if !defined(__NR_fsopen)
++#define __NR_fsopen 430
++#endif
++
++#if !defined(__NR_fsconfig)
++#define __NR_fsconfig 431
++#endif
++
++#if !defined(__NR_fsmount)
++#define __NR_fsmount 432
++#endif
++
++#if !defined(__NR_fspick)
++#define __NR_fspick 433
++#endif
++
++#if !defined(__NR_pidfd_open)
++#define __NR_pidfd_open 434
++#endif
++
++#if !defined(__NR_clone3)
++#define __NR_clone3 435
++#endif
++
++#if !defined(__NR_landlock_create_ruleset)
++#define __NR_landlock_create_ruleset 444
++#endif
++
++#if !defined(__NR_landlock_add_rule)
++#define __NR_landlock_add_rule 445
++#endif
++
++#if !defined(__NR_landlock_restrict_self)
++#define __NR_landlock_restrict_self 446
++#endif
++
++#if !defined(__NR_close_range)
++#define __NR_close_range 436
++#endif
++
++#if !defined(__NR_openat2)
++#define __NR_openat2 437
++#endif
++
++#if !defined(__NR_pidfd_getfd)
++#define __NR_pidfd_getfd 438
++#endif
++
++#if !defined(__NR_faccessat2)
++#define __NR_faccessat2 439
++#endif
++
++#if !defined(__NR_process_madvise)
++#define __NR_process_madvise 440
++#endif
++
++#if !defined(__NR_epoll_pwait2)
++#define __NR_epoll_pwait2 441
++#endif
++
++#if !defined(__NR_mount_setattr)
++#define __NR_mount_setattr 442
++#endif
++
+ #endif  // SANDBOX_LINUX_SYSTEM_HEADERS_X86_32_LINUX_SYSCALLS_H_
+ 
+diff --color -rupN ./a/linux/system_headers/x86_64_linux_syscalls.h ./b/linux/system_headers/x86_64_linux_syscalls.h
+--- ./a/linux/system_headers/x86_64_linux_syscalls.h	2022-10-14 13:15:44.000000000 +0200
++++ ./b/linux/system_headers/x86_64_linux_syscalls.h	2022-10-18 14:37:09.547318623 +0200
+@@ -1290,5 +1290,153 @@
+ #define __NR_memfd_create 319
+ #endif
+ 
++#if !defined(__NR_kexec_file_load)
++#define __NR_kexec_file_load 320
++#endif
++
++#if !defined(__NR_bpf)
++#define __NR_bpf 321
++#endif
++
++#if !defined(__NR_execveat)
++#define __NR_execveat 322
++#endif
++
++#if !defined(__NR_userfaultfd)
++#define __NR_userfaultfd 323
++#endif
++
++#if !defined(__NR_membarrier)
++#define __NR_membarrier 324
++#endif
++
++#if !defined(__NR_mlock2)
++#define __NR_mlock2 325
++#endif
++
++#if !defined(__NR_copy_file_range)
++#define __NR_copy_file_range 326
++#endif
++
++#if !defined(__NR_preadv2)
++#define __NR_preadv2 327
++#endif
++
++#if !defined(__NR_pwritev2)
++#define __NR_pwritev2 328
++#endif
++
++#if !defined(__NR_pkey_mprotect)
++#define __NR_pkey_mprotect 329
++#endif
++
++#if !defined(__NR_pkey_alloc)
++#define __NR_pkey_alloc 330
++#endif
++
++#if !defined(__NR_pkey_free)
++#define __NR_pkey_free 331
++#endif
++
++#if !defined(__NR_statx)
++#define __NR_statx 332
++#endif
++
++#if !defined(__NR_io_pgetevents)
++#define __NR_io_pgetevents 333
++#endif
++
++#if !defined(__NR_rseq)
++#define __NR_rseq 334
++#endif
++
++#if !defined(__NR_pidfd_send_signal)
++#define __NR_pidfd_send_signal 424
++#endif
++
++#if !defined(__NR_io_uring_setup)
++#define __NR_io_uring_setup 425
++#endif
++
++#if !defined(__NR_io_uring_enter)
++#define __NR_io_uring_enter 426
++#endif
++
++#if !defined(__NR_io_uring_register)
++#define __NR_io_uring_register 427
++#endif
++
++#if !defined(__NR_open_tree)
++#define __NR_open_tree 428
++#endif
++
++#if !defined(__NR_move_mount)
++#define __NR_move_mount 429
++#endif
++
++#if !defined(__NR_fsopen)
++#define __NR_fsopen 430
++#endif
++
++#if !defined(__NR_fsconfig)
++#define __NR_fsconfig 431
++#endif
++
++#if !defined(__NR_fsmount)
++#define __NR_fsmount 432
++#endif
++
++#if !defined(__NR_fspick)
++#define __NR_fspick 433
++#endif
++
++#if !defined(__NR_pidfd_open)
++#define __NR_pidfd_open 434
++#endif
++
++#if !defined(__NR_clone3)
++#define __NR_clone3 435
++#endif
++
++#if !defined(__NR_close_range)
++#define __NR_close_range 436
++#endif
++
++#if !defined(__NR_openat2)
++#define __NR_openat2 437
++#endif
++
++#if !defined(__NR_pidfd_getfd)
++#define __NR_pidfd_getfd 438
++#endif
++
++#if !defined(__NR_faccessat2)
++#define __NR_faccessat2 439
++#endif
++
++#if !defined(__NR_process_madvise)
++#define __NR_process_madvise 440
++#endif
++
++#if !defined(__NR_epoll_pwait2)
++#define __NR_epoll_pwait2 441
++#endif
++
++#if !defined(__NR_mount_setattr)
++#define __NR_mount_setattr 442
++#endif
++
++#if !defined(__NR_landlock_create_ruleset)
++#define __NR_landlock_create_ruleset 444
++#endif
++
++#if !defined(__NR_landlock_add_rule)
++#define __NR_landlock_add_rule 445
++#endif
++
++#if !defined(__NR_landlock_restrict_self)
++#define __NR_landlock_restrict_self 446
++#endif
++
+ #endif  // SANDBOX_LINUX_SYSTEM_HEADERS_X86_64_LINUX_SYSCALLS_H_
+ 
