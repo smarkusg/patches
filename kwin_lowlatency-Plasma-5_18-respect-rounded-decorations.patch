@@ -1,0 +1,92 @@
+diff --color -rupN ./a/blur.cpp ./b/blur.cpp
+--- ./a/blur.cpp	2021-10-22 21:33:16.000000000 +0200
++++ ./b/blur.cpp	2022-11-02 20:23:26.895739879 +0100
+@@ -267,6 +267,7 @@ void BlurEffect::reconfigure(Reconfigure
+         delete m_blurManager;
+         m_blurManager = nullptr;
+     }
++    updateCornersRegion();
+ 
+     // Update all windows for the blur to take effect
+     effects->addRepaintFull();
+@@ -392,6 +393,31 @@ bool BlurEffect::supported()
+     return supported;
+ }
+ 
++void BlurEffect::updateCornersRegion()
++{
++    QRegion square = QRegion(0, 0, m_topRadius, m_topRadius);
++    QRegion circle = QRegion(0, 0, 2*m_topRadius, 2*m_topRadius, QRegion::RegionType::Ellipse);
++    m_topLeftCorner = QRegion(0, 0, m_topRadius, m_topRadius);
++    m_topRightCorner = QRegion(0, 0, m_topRadius, m_topRadius);
++
++    m_topLeftCorner &= circle;
++    m_topLeftCorner ^= square;
++    circle.translate(-m_topRadius, 0);
++    m_topRightCorner &= circle;
++    m_topRightCorner ^= square;
++
++    square = QRegion(0, 0, m_bottomRadius, m_bottomRadius);
++    circle = QRegion(0, -m_bottomRadius, 2*m_bottomRadius, m_bottomRadius, QRegion::RegionType::Ellipse);
++    m_bottomLeftCorner = QRegion(0, 0, m_bottomRadius, m_bottomRadius);
++    m_bottomRightCorner = QRegion(0, 0, m_bottomRadius, m_bottomRadius);
++
++    m_bottomLeftCorner &= circle;
++    m_bottomLeftCorner ^= square;
++    circle.translate(-m_bottomRadius, 0);
++    m_bottomRightCorner &= circle;
++    m_bottomRightCorner ^= square;
++}
++
+ QRect BlurEffect::expand(const QRect &rect) const
+ {
+     return rect.adjusted(-m_expandSize, -m_expandSize, m_expandSize, m_expandSize);
+@@ -434,6 +460,22 @@ QRegion BlurEffect::blurRegion(const Eff
+         region -= w->decorationInnerRect();
+     }
+ 
++    bool isMaximized = effects->clientArea(MaximizeArea, effects->activeScreen(), effects->currentDesktop()) == w->frameGeometry();
++    bool hasBluredDecoration = w->hasDecoration() && w->decorationHasAlpha() && effects->decorationSupportsBlurBehind();
++
++    if (m_topRadius && !isMaximized && hasBluredDecoration){
++        QPoint topRightPosition = QPoint(w->rect().width() - m_topRadius, 0);
++        region -= m_topLeftCorner;
++        region -= m_topRightCorner.translated(topRightPosition); 
++    }
++
++    if (m_bottomRadius && !isMaximized && hasBluredDecoration){
++        QPoint bottomLeftPosition = QPoint(0, w->rect().height() - m_bottomRadius);
++        QPoint bottomRightPosition = QPoint(w->rect().width() - m_bottomRadius, w->rect().height() - m_bottomRadius);
++        region -= m_bottomLeftCorner.translated(bottomLeftPosition);
++        region -= m_bottomRightCorner.translated(bottomRightPosition); 
++    }
++
+     return region;
+ }
+ 
+diff --color -rupN ./a/blur.h ./b/blur.h
+--- ./a/blur.h	2021-10-22 21:33:16.000000000 +0200
++++ ./b/blur.h	2022-11-02 20:19:38.808965382 +0100
+@@ -75,6 +75,8 @@ public Q_SLOTS:
+     void slotPropertyNotify(KWin::EffectWindow *w, long atom);
+     void slotScreenGeometryChanged();
+ 
++    void updateCornersRegion();
++
+ private:
+     QRect expand(const QRect &rect) const;
+     QRegion expand(const QRegion &region) const;
+@@ -109,6 +111,13 @@ private:
+     QRegion m_paintedArea; // actually painted area which is greater than m_damagedArea
+     QRegion m_currentBlur; // keeps track of the currently blured area of the windows(from bottom to top)
+ 
++    int m_topRadius; // Radius of the rounded corners of the decoration
++    int m_bottomRadius;
++    QRegion m_topLeftCorner; // Regions we have to remove of the blured region
++    QRegion m_topRightCorner;
++    QRegion m_bottomLeftCorner;
++    QRegion m_bottomRightCorner;
++
+     int m_downSampleIterations; // number of times the texture will be downsized to half size
+     int m_offset;
+     int m_expandSize;
