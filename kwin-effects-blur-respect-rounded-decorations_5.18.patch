@@ -1,0 +1,982 @@
+diff --color -rupN ./a/cmake/Modules/Findepoxy.cmake ./b/cmake/Modules/Findepoxy.cmake
+--- ./a/cmake/Modules/Findepoxy.cmake	1970-01-01 01:00:00.000000000 +0100
++++ ./b/cmake/Modules/Findepoxy.cmake	2020-05-02 23:05:15.000000000 +0200
+@@ -0,0 +1,56 @@
++# - Try to find libepoxy
++# Once done this will define
++#
++#  epoxy_FOUND        - System has libepoxy
++#  epoxy_LIBRARY      - The libepoxy library
++#  epoxy_INCLUDE_DIR  - The libepoxy include dir
++#  epoxy_DEFINITIONS  - Compiler switches required for using libepoxy
++#  epoxy_HAS_GLX      - Whether GLX support is available
++
++# Copyright (c) 2014 Fredrik Höglund <fredrik@kde.org>
++#
++# Redistribution and use in source and binary forms, with or without
++# modification, are permitted provided that the following conditions
++# are met:
++# 1. Redistributions of source code must retain the above copyright
++#    notice, this list of conditions and the following disclaimer.
++# 2. Redistributions in binary form must reproduce the above copyright
++#    notice, this list of conditions and the following disclaimer in the
++#    documentation and/or other materials provided with the distribution.
++# 3. Neither the name of the University nor the names of its contributors
++#    may be used to endorse or promote products derived from this software
++#    without specific prior written permission.
++#
++# THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
++# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++# ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
++# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++# OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++# OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++# SUCH DAMAGE.
++
++if (NOT WIN32)
++  find_package(PkgConfig)
++  pkg_check_modules(PKG_epoxy QUIET epoxy)
++
++  set(epoxy_DEFINITIONS ${PKG_epoxy_CFLAGS})
++
++  find_path(epoxy_INCLUDE_DIR NAMES epoxy/gl.h HINTS ${PKG_epoxy_INCLUDEDIR} ${PKG_epoxy_INCLUDE_DIRS})
++  find_library(epoxy_LIBRARY  NAMES epoxy      HINTS ${PKG_epoxy_LIBDIR} ${PKG_epoxy_LIBRARY_DIRS})
++  find_file(epoxy_GLX_HEADER NAMES epoxy/glx.h HINTS ${epoxy_INCLUDE_DIR})
++
++  if (epoxy_GLX_HEADER STREQUAL "epoxy_GLX_HEADER-NOTFOUND")
++    set(epoxy_HAS_GLX FALSE CACHE BOOL "whether glx is available")
++  else ()
++    set(epoxy_HAS_GLX TRUE CACHE BOOL "whether glx is available")
++  endif()
++
++  include(FindPackageHandleStandardArgs)
++  find_package_handle_standard_args(epoxy DEFAULT_MSG epoxy_LIBRARY epoxy_INCLUDE_DIR)
++
++  mark_as_advanced(epoxy_INCLUDE_DIR epoxy_LIBRARY epoxy_HAS_GLX)
++endif()
+diff --color -rupN ./a/CMakeLists.txt ./b/CMakeLists.txt
+--- ./a/CMakeLists.txt	2022-04-25 12:10:00.000000000 +0200
++++ ./b/CMakeLists.txt	2022-11-04 12:55:40.184532865 +0100
+@@ -1,7 +1,7 @@
+ cmake_minimum_required(VERSION 3.0)
+ project(kwin-effects-yaml)
+ 
+-set(KF_MIN_VERSION "5.78")
++set(KF_MIN_VERSION "5.68")
+ 
+ set(CMAKE_CXX_STANDARD 14)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+diff --color -rupN ./a/src/blur.cpp ./b/src/blur.cpp
+--- ./a/src/blur.cpp	2022-04-25 12:10:00.000000000 +0200
++++ ./b/src/blur.cpp	2022-11-04 13:18:10.982512209 +0100
+@@ -1,10 +1,23 @@
+ /*
+-    SPDX-FileCopyrightText: 2010 Fredrik Höglund <fredrik@kde.org>
+-    SPDX-FileCopyrightText: 2011 Philipp Knechtges <philipp-dev@knechtges.com>
+-    SPDX-FileCopyrightText: 2018 Alex Nemeth <alex.nemeth329@gmail.com>
+-
+-    SPDX-License-Identifier: GPL-2.0-or-later
+-*/
++ *   Copyright © 2010 Fredrik Höglund <fredrik@kde.org>
++ *   Copyright © 2011 Philipp Knechtges <philipp-dev@knechtges.com>
++ *   Copyright © 2018 Alex Nemeth <alex.nemeth329@gmail.com>
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 2 of the License, or
++ *   (at your option) any later version.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ *   General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program; see the file COPYING.  if not, write to
++ *   the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
++ *   Boston, MA 02110-1301, USA.
++ */
+ 
+ #include "blur.h"
+ #include "blurshader.h"
+@@ -15,13 +28,13 @@
+ #include <QMatrix4x4>
+ #include <QScreen> // for QGuiApplication
+ #include <QTime>
+-#include <QTimer>
+ #include <QWindow>
+ #include <cmath> // for ceil()
+ 
+-#include <KWaylandServer/surface_interface.h>
+-#include <KWaylandServer/shadow_interface.h>
+-#include <KWaylandServer/display.h>
++#include <KWayland/Server/surface_interface.h>
++#include <KWayland/Server/blur_interface.h>
++#include <KWayland/Server/shadow_interface.h>
++#include <KWayland/Server/display.h>
+ #include <KSharedConfig>
+ #include <KConfigGroup>
+ 
+@@ -30,9 +43,6 @@ namespace KWin
+ 
+ static const QByteArray s_blurAtomName = QByteArrayLiteral("_KDE_NET_WM_BLUR_BEHIND_REGION");
+ 
+-KWaylandServer::BlurManagerInterface *BlurEffect::s_blurManager = nullptr;
+-QTimer *BlurEffect::s_blurManagerRemoveTimer = nullptr;
+-
+ BlurEffect::BlurEffect()
+ {
+     initConfig<BlurConfig>();
+@@ -44,29 +54,20 @@ BlurEffect::BlurEffect()
+     // ### Hackish way to announce support.
+     //     Should be included in _NET_SUPPORTED instead.
+     if (m_shader && m_shader->isValid() && m_renderTargetsValid) {
+-        if (effects->xcbConnection()) {
+-            net_wm_blur_region = effects->announceSupportProperty(s_blurAtomName, this);
+-        }
+-        if (effects->waylandDisplay()) {
+-            if (!s_blurManagerRemoveTimer) {
+-                s_blurManagerRemoveTimer = new QTimer(qApp);
+-                s_blurManagerRemoveTimer->setSingleShot(true);
+-                s_blurManagerRemoveTimer->callOnTimeout([]() {
+-                    s_blurManager->remove();
+-                    s_blurManager = nullptr;
+-                });
+-            }
+-            s_blurManagerRemoveTimer->stop();
+-            if (!s_blurManager) {
+-                s_blurManager = new KWaylandServer::BlurManagerInterface(effects->waylandDisplay(), s_blurManagerRemoveTimer);
+-            }
++        net_wm_blur_region = effects->announceSupportProperty(s_blurAtomName, this);
++        KWayland::Server::Display *display = effects->waylandDisplay();
++        if (display) {
++            m_blurManager = display->createBlurManager(this);
++            m_blurManager->create();
+         }
++    } else {
++        net_wm_blur_region = 0;
+     }
+ 
+     connect(effects, &EffectsHandler::windowAdded, this, &BlurEffect::slotWindowAdded);
+     connect(effects, &EffectsHandler::windowDeleted, this, &BlurEffect::slotWindowDeleted);
+     connect(effects, &EffectsHandler::propertyNotify, this, &BlurEffect::slotPropertyNotify);
+-    connect(effects, &EffectsHandler::virtualScreenGeometryChanged, this, &BlurEffect::slotScreenGeometryChanged);
++    connect(effects, &EffectsHandler::screenGeometryChanged, this, &BlurEffect::slotScreenGeometryChanged);
+     connect(effects, &EffectsHandler::xcbConnectionChanged, this,
+         [this] {
+             if (m_shader && m_shader->isValid() && m_renderTargetsValid) {
+@@ -76,18 +77,12 @@ BlurEffect::BlurEffect()
+     );
+ 
+     // Fetch the blur regions for all windows
+-    const auto stackingOrder = effects->stackingOrder();
+-    for (EffectWindow *window : stackingOrder) {
+-        slotWindowAdded(window);
+-    }
++    foreach (EffectWindow *window, effects->stackingOrder())
++        updateBlurRegion(window);
+ }
+ 
+ BlurEffect::~BlurEffect()
+ {
+-    // When compositing is restarted, avoid removing the manager immediately.
+-    if (s_blurManager) {
+-        s_blurManagerRemoveTimer->start(1000);
+-    }
+     deleteFBOs();
+ }
+ 
+@@ -97,10 +92,8 @@ void BlurEffect::slotScreenGeometryChang
+     updateTexture();
+ 
+     // Fetch the blur regions for all windows
+-    const auto stackingOrder = effects->stackingOrder();
+-    for (EffectWindow *window : stackingOrder) {
++    foreach (EffectWindow *window, effects->stackingOrder())
+         updateBlurRegion(window);
+-    }
+     effects->doneOpenGLContextCurrent();
+ }
+ 
+@@ -266,9 +259,16 @@ void BlurEffect::reconfigure(Reconfigure
+     m_noiseStrength = BlurConfig::noiseStrength();
+     m_topRadius = BlurConfig::topDecorationRadius();
+     m_bottomRadius = BlurConfig::bottomDecorationRadius();
++
+     m_scalingFactor = qMax(1.0, QGuiApplication::primaryScreen()->logicalDotsPerInch() / 96.0);
+ 
+     updateTexture();
++
++    if (!m_shader || !m_shader->isValid()) {
++        effects->removeSupportProperty(s_blurAtomName, this);
++        delete m_blurManager;
++        m_blurManager = nullptr;
++    }
+     updateCornersRegion();
+ 
+     // Update all windows for the blur to take effect
+@@ -278,10 +278,10 @@ void BlurEffect::reconfigure(Reconfigure
+ void BlurEffect::updateBlurRegion(EffectWindow *w) const
+ {
+     QRegion region;
+-    bool valid = false;
++    QByteArray value;
+ 
+     if (net_wm_blur_region != XCB_ATOM_NONE) {
+-        const QByteArray value = w->readProperty(net_wm_blur_region, XCB_ATOM_CARDINAL, 32);
++        value = w->readProperty(net_wm_blur_region, XCB_ATOM_CARDINAL, 32);
+         if (value.size() > 0 && !(value.size() % (4 * sizeof(uint32_t)))) {
+             const uint32_t *cardinals = reinterpret_cast<const uint32_t*>(value.constData());
+             for (unsigned int i = 0; i < value.size() / sizeof(uint32_t);) {
+@@ -292,41 +292,38 @@ void BlurEffect::updateBlurRegion(Effect
+                 region += QRect(x, y, w, h);
+             }
+         }
+-        valid = !value.isNull();
+     }
+ 
+-    KWaylandServer::SurfaceInterface *surf = w->surface();
++    KWayland::Server::SurfaceInterface *surf = w->surface();
+ 
+     if (surf && surf->blur()) {
+         region = surf->blur()->region();
+-        valid = true;
+     }
+ 
+     if (auto internal = w->internalWindow()) {
+         const auto property = internal->property("kwin_blur");
+         if (property.isValid()) {
+             region = property.value<QRegion>();
+-            valid = true;
+         }
+     }
+ 
+-    // If the specified blur region is empty, enable blur for the whole window.
+-    if (region.isEmpty() && valid) {
++    //!value.isNull() full window in X11 case, surf->blur()
++    //valid, full window in wayland case
++    if (region.isEmpty() && (!value.isNull() || (surf && surf->blur()))) {
+         // Set the data to a dummy value.
+         // This is needed to be able to distinguish between the value not
+         // being set, and being set to an empty region.
+         w->setData(WindowBlurBehindRole, 1);
+-    } else {
++    } else
+         w->setData(WindowBlurBehindRole, region);
+-    }
+ }
+ 
+ void BlurEffect::slotWindowAdded(EffectWindow *w)
+ {
+-    KWaylandServer::SurfaceInterface *surf = w->surface();
++    KWayland::Server::SurfaceInterface *surf = w->surface();
+ 
+     if (surf) {
+-        windowBlurChangedConnections[w] = connect(surf, &KWaylandServer::SurfaceInterface::blurChanged, this, [this, w] () {
++        windowBlurChangedConnections[w] = connect(surf, &KWayland::Server::SurfaceInterface::blurChanged, this, [this, w] () {
+             if (w) {
+                 updateBlurRegion(w);
+             }
+@@ -349,7 +346,6 @@ void BlurEffect::slotWindowDeleted(Effec
+     windowBlurChangedConnections.erase(it);
+ }
+ 
+-
+ void BlurEffect::slotPropertyNotify(EffectWindow *w, long atom)
+ {
+     if (w && atom == net_wm_blur_region && net_wm_blur_region != XCB_ATOM_NONE) {
+@@ -377,9 +373,6 @@ bool BlurEffect::enabledByDefault()
+ 
+     if (gl->isIntel() && gl->chipClass() < SandyBridge)
+         return false;
+-    if (gl->isPanfrost() && gl->chipClass() <= MaliT8XX) {
+-        return false;
+-    }
+     if (gl->isSoftwareEmulation()) {
+         return false;
+     }
+@@ -402,40 +395,24 @@ bool BlurEffect::supported()
+     return supported;
+ }
+ 
+-QRect BlurEffect::expand(const QRect &rect) const
+-{
+-    return rect.adjusted(-m_expandSize, -m_expandSize, m_expandSize, m_expandSize);
+-}
+-
+-QRegion BlurEffect::expand(const QRegion &region) const
+-{
+-    QRegion expanded;
+-
+-    for (const QRect &rect : region) {
+-        expanded += expand(rect);
+-    }
+-
+-    return expanded;
+-}
+-
+ void BlurEffect::updateCornersRegion()
+ {
+     QRegion square = QRegion(0, 0, m_topRadius, m_topRadius);
+     QRegion circle = QRegion(0, 0, 2*m_topRadius, 2*m_topRadius, QRegion::RegionType::Ellipse);
+     m_topLeftCorner = QRegion(0, 0, m_topRadius, m_topRadius);
+     m_topRightCorner = QRegion(0, 0, m_topRadius, m_topRadius);
+-   
++
+     m_topLeftCorner &= circle;
+     m_topLeftCorner ^= square;
+     circle.translate(-m_topRadius, 0);
+     m_topRightCorner &= circle;
+     m_topRightCorner ^= square;
+-    
++
+     square = QRegion(0, 0, m_bottomRadius, m_bottomRadius);
+     circle = QRegion(0, -m_bottomRadius, 2*m_bottomRadius, m_bottomRadius, QRegion::RegionType::Ellipse);
+     m_bottomLeftCorner = QRegion(0, 0, m_bottomRadius, m_bottomRadius);
+     m_bottomRightCorner = QRegion(0, 0, m_bottomRadius, m_bottomRadius);
+- 
++
+     m_bottomLeftCorner &= circle;
+     m_bottomLeftCorner ^= square;
+     circle.translate(-m_bottomRadius, 0);
+@@ -443,6 +420,22 @@ void BlurEffect::updateCornersRegion()
+     m_bottomRightCorner ^= square;
+ }
+ 
++QRect BlurEffect::expand(const QRect &rect) const
++{
++    return rect.adjusted(-m_expandSize, -m_expandSize, m_expandSize, m_expandSize);
++}
++
++QRegion BlurEffect::expand(const QRegion &region) const
++{
++    QRegion expanded;
++
++    for (const QRect &rect : region) {
++        expanded += expand(rect);
++    }
++
++    return expanded;
++}
++
+ QRegion BlurEffect::blurRegion(const EffectWindow *w) const
+ {
+     QRegion region;
+@@ -452,42 +445,42 @@ QRegion BlurEffect::blurRegion(const Eff
+         const QRegion appRegion = qvariant_cast<QRegion>(value);
+         if (!appRegion.isEmpty()) {
+             if (w->decorationHasAlpha() && effects->decorationSupportsBlurBehind()) {
+-                region = QRegion(w->rect()) - w->decorationInnerRect();
++                region = w->shape();
++                region -= w->decorationInnerRect();
+             }
+             region |= appRegion.translated(w->contentsRect().topLeft()) &
+                       w->decorationInnerRect();
+         } else {
+             // An empty region means that the blur effect should be enabled
+             // for the whole window.
+-            region = w->rect();
++            region = w->shape();
+         }
+     } else if (w->decorationHasAlpha() && effects->decorationSupportsBlurBehind()) {
+         // If the client hasn't specified a blur region, we'll only enable
+         // the effect behind the decoration.
+-        region = QRegion(w->rect()) - w->decorationInnerRect();
++        region = w->shape();
++        region -= w->decorationInnerRect();
+     }
+-    
++
+     bool isMaximized = effects->clientArea(MaximizeArea, effects->activeScreen(), effects->currentDesktop()) == w->frameGeometry();
+     bool hasBluredDecoration = w->hasDecoration() && w->decorationHasAlpha() && effects->decorationSupportsBlurBehind();
+-    
++
+     if (m_topRadius && !isMaximized && hasBluredDecoration){
+         QPoint topRightPosition = QPoint(w->rect().width() - m_topRadius, 0);
+         region -= m_topLeftCorner;
+         region -= m_topRightCorner.translated(topRightPosition); 
+     }
+-    
++
+     if (m_bottomRadius && !isMaximized && hasBluredDecoration){
+         QPoint bottomLeftPosition = QPoint(0, w->rect().height() - m_bottomRadius);
+         QPoint bottomRightPosition = QPoint(w->rect().width() - m_bottomRadius, w->rect().height() - m_bottomRadius);
+         region -= m_bottomLeftCorner.translated(bottomLeftPosition);
+         region -= m_bottomRightCorner.translated(bottomRightPosition); 
+     }
+-    
++
+     return region;
+ }
+ 
+-
+-
+ void BlurEffect::uploadRegion(QVector2D *&map, const QRegion &region, const int downSampleIterations)
+ {
+     for (int i = 0; i <= downSampleIterations; i++) {
+@@ -534,19 +527,20 @@ void BlurEffect::uploadGeometry(GLVertex
+     vbo->setAttribLayout(layout, 2, sizeof(QVector2D));
+ }
+ 
+-void BlurEffect::prePaintScreen(ScreenPrePaintData &data, std::chrono::milliseconds presentTime)
++void BlurEffect::prePaintScreen(ScreenPrePaintData &data, int time)
+ {
++    m_damagedArea = QRegion();
+     m_paintedArea = QRegion();
+     m_currentBlur = QRegion();
+ 
+-    effects->prePaintScreen(data, presentTime);
++    effects->prePaintScreen(data, time);
+ }
+ 
+-void BlurEffect::prePaintWindow(EffectWindow* w, WindowPrePaintData& data, std::chrono::milliseconds presentTime)
++void BlurEffect::prePaintWindow(EffectWindow* w, WindowPrePaintData& data, int time)
+ {
+     // this effect relies on prePaintWindow being called in the bottom to top order
+ 
+-    effects->prePaintWindow(w, data, presentTime);
++    effects->prePaintWindow(w, data, time);
+ 
+     if (!w->isPaintingEnabled()) {
+         return;
+@@ -555,19 +549,18 @@ void BlurEffect::prePaintWindow(EffectWi
+         return;
+     }
+ 
++    // to blur an area partially we have to shrink the opaque area of a window
++    QRegion newClip;
+     const QRegion oldClip = data.clip;
+-    if (data.clip.intersects(m_currentBlur)) {
+-        // to blur an area partially we have to shrink the opaque area of a window
+-        QRegion newClip;
+-        for (const QRect &rect : data.clip) {
+-            newClip |= rect.adjusted(m_expandSize, m_expandSize, -m_expandSize, -m_expandSize);
+-        }
+-        data.clip = newClip;
+-
+-        // we don't have to blur a region we don't see
+-        m_currentBlur -= newClip;
++    for (const QRect &rect : data.clip) {
++        newClip |= rect.adjusted(m_expandSize, m_expandSize, -m_expandSize, -m_expandSize);
+     }
++    data.clip = newClip;
+ 
++    const QRegion oldPaint = data.paint;
++
++    // we don't have to blur a region we don't see
++    m_currentBlur -= newClip;
+     // if we have to paint a non-opaque part of this window that intersects with the
+     // currently blurred region we have to redraw the whole region
+     if ((data.paint - oldClip).intersects(m_currentBlur)) {
+@@ -583,6 +576,8 @@ void BlurEffect::prePaintWindow(EffectWi
+     // blur everything
+     if (m_paintedArea.intersects(expandedBlur) || data.paint.intersects(blurArea)) {
+         data.paint |= expandedBlur;
++        // we keep track of the "damage propagation"
++        m_damagedArea |=  (w->isDock() ? (expandedBlur & m_damagedArea) : expand(expandedBlur & m_damagedArea)) & blurArea;
+         // we have to check again whether we do not damage a blurred area
+         // of a window
+         if (expandedBlur.intersects(m_currentBlur)) {
+@@ -592,6 +587,12 @@ void BlurEffect::prePaintWindow(EffectWi
+ 
+     m_currentBlur |= expandedBlur;
+ 
++    // we don't consider damaged areas which are occluded and are not
++    // explicitly damaged by this window
++    m_damagedArea -= data.clip;
++    m_damagedArea |= oldPaint;
++
++    // in contrast to m_damagedArea does m_paintedArea keep track of all repainted areas
+     m_paintedArea -= data.clip;
+     m_paintedArea |= data.paint;
+ }
+@@ -649,13 +650,12 @@ void BlurEffect::drawWindow(EffectWindow
+             shape = shape & region;
+         }
+ 
+-        EffectWindow* modal = w->transientFor();
+-        const bool transientForIsDock = (modal ? modal->isDock() : false);
+-
+         if (!shape.isEmpty()) {
+-            doBlur(shape, screen, data.opacity(), data.screenProjectionMatrix(), w->isDock() || transientForIsDock, w->frameGeometry());
++            doBlur(shape, screen, data.opacity(), data.screenProjectionMatrix(), w->isDock(), w->geometry());
+         }
+     }
++
++    // Draw the window over the blurred area
+     effects->drawWindow(w, mask, region, data);
+ }
+ 
+@@ -687,16 +687,16 @@ void BlurEffect::generateNoiseTexture()
+         uint8_t *noiseImageLine = (uint8_t *) noiseImage.scanLine(y);
+ 
+         for (int x = 0; x < noiseImage.width(); x++) {
+-            noiseImageLine[x] = qrand() % m_noiseStrength;
++            noiseImageLine[x] = qrand() % m_noiseStrength + (128 - m_noiseStrength / 2);
+         }
+     }
+ 
+     // The noise texture looks distorted when not scaled with integer
+     noiseImage = noiseImage.scaled(noiseImage.size() * m_scalingFactor);
+ 
+-    m_noiseTexture.reset(new GLTexture(noiseImage));
+-    m_noiseTexture->setFilter(GL_NEAREST);
+-    m_noiseTexture->setWrapMode(GL_REPEAT);
++    m_noiseTexture = GLTexture(noiseImage);
++    m_noiseTexture.setFilter(GL_NEAREST);
++    m_noiseTexture.setWrapMode(GL_REPEAT);
+ }
+ 
+ void BlurEffect::doBlur(const QRegion& shape, const QRect& screen, const float opacity, const QMatrix4x4 &screenProjection, bool isDock, QRect windowRect)
+@@ -737,10 +737,7 @@ void BlurEffect::doBlur(const QRegion& s
+             glEnable(GL_FRAMEBUFFER_SRGB);
+         }
+ 
+-        const QRect screenRect = effects->virtualScreenGeometry();
+-        QMatrix4x4 mvp;
+-        mvp.ortho(0, screenRect.width(), screenRect.height(), 0, 0, 65535);
+-        copyScreenSampleTexture(vbo, blurRectCount, shape.translated(xTranslate, yTranslate), mvp);
++        copyScreenSampleTexture(vbo, blurRectCount, shape.translated(xTranslate, yTranslate), screenProjection);
+     } else {
+         m_renderTargets.first()->blitFromFramebuffer(sourceRect, destRect);
+ 
+@@ -779,58 +776,34 @@ void BlurEffect::doBlur(const QRegion& s
+         glDisable(GL_BLEND);
+     }
+ 
+-    if (m_noiseStrength > 0) {
+-        // Apply an additive noise onto the blurred image.
+-        // The noise is useful to mask banding artifacts, which often happens due to the smooth color transitions in the
+-        // blurred image.
+-        // The noise is applied in perceptual space (i.e. after glDisable(GL_FRAMEBUFFER_SRGB)). This practice is also
+-        // seen in other application of noise synthesis (films, image codecs), and makes the noise less visible overall
+-        // (reduces graininess).
+-        glEnable(GL_BLEND);
+-        if (opacity < 1.0) {
+-            // We need to modulate the opacity of the noise as well; otherwise a thin layer would appear when applying
+-            // effects like fade out.
+-            // glBlendColor should have been set above.
+-            glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE);
+-        } else {
+-            // Add the shader's output directly to the pixels in framebuffer.
+-            glBlendFunc(GL_ONE, GL_ONE);
+-        }
+-        applyNoise(vbo, blurRectCount * (m_downSampleIterations + 1), shape.rectCount() * 6, screenProjection, windowRect.topLeft());
+-        glDisable(GL_BLEND);
+-    }
+-
+     vbo->unbindArrays();
+ }
+ 
+-void BlurEffect::upscaleRenderToScreen(GLVertexBuffer *vbo, int vboStart, int blurRectCount, const QMatrix4x4 &screenProjection, QPoint windowPosition)
++void BlurEffect::upscaleRenderToScreen(GLVertexBuffer *vbo, int vboStart, int blurRectCount, QMatrix4x4 screenProjection, QPoint windowPosition)
+ {
++    glActiveTexture(GL_TEXTURE0);
+     m_renderTextures[1].bind();
+ 
+-    m_shader->bind(BlurShader::UpSampleType);
+-    m_shader->setTargetTextureSize(m_renderTextures[0].size() * GLRenderTarget::virtualScreenScale());
++    if (m_noiseStrength > 0) {
++        m_shader->bind(BlurShader::NoiseSampleType);
++        m_shader->setTargetTextureSize(m_renderTextures[0].size() * GLRenderTarget::virtualScreenScale());
++        m_shader->setNoiseTextureSize(m_noiseTexture.size() * GLRenderTarget::virtualScreenScale());
++        m_shader->setTexturePosition(windowPosition * GLRenderTarget::virtualScreenScale());
++
++        glActiveTexture(GL_TEXTURE1);
++        m_noiseTexture.bind();
++    } else {
++        m_shader->bind(BlurShader::UpSampleType);
++        m_shader->setTargetTextureSize(m_renderTextures[0].size() * GLRenderTarget::virtualScreenScale());
++    }
+ 
+     m_shader->setOffset(m_offset);
+     m_shader->setModelViewProjectionMatrix(screenProjection);
+ 
+     //Render to the screen
+     vbo->draw(GL_TRIANGLES, vboStart, blurRectCount);
+-    m_shader->unbind();
+-}
+-
+-void BlurEffect::applyNoise(GLVertexBuffer *vbo, int vboStart, int blurRectCount, const QMatrix4x4 &screenProjection, QPoint windowPosition)
+-{
+-    m_shader->bind(BlurShader::NoiseSampleType);
+-    m_shader->setTargetTextureSize(m_renderTextures[0].size() * GLRenderTarget::virtualScreenScale());
+-    m_shader->setNoiseTextureSize(m_noiseTexture->size() * GLRenderTarget::virtualScreenScale());
+-    m_shader->setTexturePosition(windowPosition * GLRenderTarget::virtualScreenScale());
+-
+-    m_noiseTexture->bind();
+ 
+-    m_shader->setOffset(m_offset);
+-    m_shader->setModelViewProjectionMatrix(screenProjection);
+-
+-    vbo->draw(GL_TRIANGLES, vboStart, blurRectCount);
++    glActiveTexture(GL_TEXTURE0);
+     m_shader->unbind();
+ }
+ 
+@@ -882,7 +855,7 @@ void BlurEffect::upSampleTexture(GLVerte
+     m_shader->unbind();
+ }
+ 
+-void BlurEffect::copyScreenSampleTexture(GLVertexBuffer *vbo, int blurRectCount, QRegion blurShape, const QMatrix4x4 &screenProjection)
++void BlurEffect::copyScreenSampleTexture(GLVertexBuffer *vbo, int blurRectCount, QRegion blurShape, QMatrix4x4 screenProjection)
+ {
+     m_shader->bind(BlurShader::CopySampleType);
+ 
+@@ -902,15 +875,5 @@ void BlurEffect::copyScreenSampleTexture
+     m_shader->unbind();
+ }
+ 
+-bool BlurEffect::isActive() const
+-{
+-    return !effects->isScreenLocked();
+-}
+-
+-bool BlurEffect::blocksDirectScanout() const
+-{
+-    return false;
+-}
+-
+ } // namespace KWin
+ 
+diff --color -rupN ./a/src/blur.h ./b/src/blur.h
+--- ./a/src/blur.h	2022-04-25 12:10:00.000000000 +0200
++++ ./b/src/blur.h	2022-11-02 20:19:38.000000000 +0100
+@@ -1,9 +1,22 @@
+ /*
+-    SPDX-FileCopyrightText: 2010 Fredrik Höglund <fredrik@kde.org>
+-    SPDX-FileCopyrightText: 2018 Alex Nemeth <alex.nemeth329@gmail.com>
+-
+-    SPDX-License-Identifier: GPL-2.0-or-later
+-*/
++ *   Copyright © 2010 Fredrik Höglund <fredrik@kde.org>
++ *   Copyright © 2018 Alex Nemeth <alex.nemeth329@gmail.com>
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 2 of the License, or
++ *   (at your option) any later version.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ *   General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program; see the file COPYING.  if not, write to
++ *   the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
++ *   Boston, MA 02110-1301, USA.
++ */
+ 
+ #ifndef BLUR_H
+ #define BLUR_H
+@@ -16,7 +29,13 @@
+ #include <QVector2D>
+ #include <QStack>
+ 
+-#include <KWaylandServer/blur_interface.h>
++namespace KWayland
++{
++namespace Server
++{
++class BlurManagerInterface;
++}
++}
+ 
+ namespace KWin
+ {
+@@ -37,13 +56,12 @@ public:
+     static bool enabledByDefault();
+ 
+     void reconfigure(ReconfigureFlags flags) override;
+-    void prePaintScreen(ScreenPrePaintData &data, std::chrono::milliseconds presentTime) override;
+-    void prePaintWindow(EffectWindow* w, WindowPrePaintData& data, std::chrono::milliseconds presentTime) override;
++    void prePaintScreen(ScreenPrePaintData &data, int time) override;
++    void prePaintWindow(EffectWindow* w, WindowPrePaintData& data, int time) override;
+     void drawWindow(EffectWindow *w, int mask, const QRegion &region, WindowPaintData &data) override;
+     void paintEffectFrame(EffectFrame *frame, const QRegion &region, double opacity, double frameOpacity) override;
+ 
+     bool provides(Feature feature) override;
+-    bool isActive() const override;
+ 
+     int requestedEffectChainPosition() const override {
+         return 75;
+@@ -51,14 +69,14 @@ public:
+ 
+     bool eventFilter(QObject *watched, QEvent *event) override;
+ 
+-    bool blocksDirectScanout() const override;
+-
+ public Q_SLOTS:
+     void slotWindowAdded(KWin::EffectWindow *w);
+     void slotWindowDeleted(KWin::EffectWindow *w);
+     void slotPropertyNotify(KWin::EffectWindow *w, long atom);
+     void slotScreenGeometryChanged();
+ 
++    void updateCornersRegion();
++
+ private:
+     QRect expand(const QRect &rect) const;
+     QRegion expand(const QRegion &region) const;
+@@ -74,25 +92,23 @@ private:
+     void uploadGeometry(GLVertexBuffer *vbo, const QRegion &blurRegion, const QRegion &windowRegion);
+     void generateNoiseTexture();
+ 
+-    void upscaleRenderToScreen(GLVertexBuffer *vbo, int vboStart, int blurRectCount, const QMatrix4x4 &screenProjection, QPoint windowPosition);
+-    void applyNoise(GLVertexBuffer *vbo, int vboStart, int blurRectCount, const QMatrix4x4 &screenProjection, QPoint windowPosition);
++    void upscaleRenderToScreen(GLVertexBuffer *vbo, int vboStart, int blurRectCount, QMatrix4x4 screenProjection, QPoint windowPosition);
+     void downSampleTexture(GLVertexBuffer *vbo, int blurRectCount);
+     void upSampleTexture(GLVertexBuffer *vbo, int blurRectCount);
+-    void copyScreenSampleTexture(GLVertexBuffer *vbo, int blurRectCount, QRegion blurShape, const QMatrix4x4 &screenProjection);
++    void copyScreenSampleTexture(GLVertexBuffer *vbo, int blurRectCount, QRegion blurShape, QMatrix4x4 screenProjection);
+ 
+-    void updateCornersRegion();
+-    
+ private:
+     BlurShader *m_shader;
+     QVector <GLRenderTarget*> m_renderTargets;
+     QVector <GLTexture> m_renderTextures;
+     QStack <GLRenderTarget*> m_renderTargetStack;
+ 
+-    QScopedPointer<GLTexture> m_noiseTexture;
++    GLTexture m_noiseTexture;
+ 
+     bool m_renderTargetsValid;
+-    long net_wm_blur_region = 0;
+-    QRegion m_paintedArea; // keeps track of all painted areas (from bottom to top)
++    long net_wm_blur_region;
++    QRegion m_damagedArea; // keeps track of the area which has been damaged (from bottom to top)
++    QRegion m_paintedArea; // actually painted area which is greater than m_damagedArea
+     QRegion m_currentBlur; // keeps track of the currently blured area of the windows(from bottom to top)
+ 
+     int m_topRadius; // Radius of the rounded corners of the decoration
+@@ -101,7 +117,7 @@ private:
+     QRegion m_topRightCorner;
+     QRegion m_bottomLeftCorner;
+     QRegion m_bottomRightCorner;
+-    
++
+     int m_downSampleIterations; // number of times the texture will be downsized to half size
+     int m_offset;
+     int m_expandSize;
+@@ -124,9 +140,7 @@ private:
+     QVector <BlurValuesStruct> blurStrengthValues;
+ 
+     QMap <EffectWindow*, QMetaObject::Connection> windowBlurChangedConnections;
+-
+-    static KWaylandServer::BlurManagerInterface *s_blurManager;
+-    static QTimer *s_blurManagerRemoveTimer;
++    KWayland::Server::BlurManagerInterface *m_blurManager = nullptr;
+ };
+ 
+ inline
+diff --color -rupN ./a/src/blurshader.cpp ./b/src/blurshader.cpp
+--- ./a/src/blurshader.cpp	2022-04-25 12:10:00.000000000 +0200
++++ ./b/src/blurshader.cpp	2021-10-22 21:28:08.000000000 +0200
+@@ -1,14 +1,28 @@
+ /*
+-    SPDX-FileCopyrightText: 2010 Fredrik Höglund <fredrik@kde.org>
+-    SPDX-FileCopyrightText: 2018 Alex Nemeth <alex.nemeth329@gmail.com>
+-
+-    SPDX-License-Identifier: GPL-2.0-or-later
+-*/
++ *   Copyright © 2010 Fredrik Höglund <fredrik@kde.org>
++ *   Copyright © 2018 Alex Nemeth <alex.nemeth329@gmail.com>
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 2 of the License, or
++ *   (at your option) any later version.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ *   General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program; see the file COPYING.  if not, write to
++ *   the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
++ *   Boston, MA 02110-1301, USA.
++ */
+ 
+ #include "blurshader.h"
+ 
+ #include <kwineffects.h>
+ #include <kwinglplatform.h>
++#include <kwinglutils.h>
+ 
+ #include <QByteArray>
+ #include <QTextStream>
+@@ -133,33 +147,45 @@ BlurShader::BlurShader(QObject *parent)
+ 
+     streamFragCopy.flush();
+ 
+-    // Fragment shader - Noise tiling
++    // Fragment shader - Noise texture
+     QTextStream streamFragNoise(&fragmentNoiseSource);
+ 
+     streamFragNoise << glHeaderString << glUniformString;
+ 
++    streamFragNoise << "uniform sampler2D noiseTexUnit;\n";
+     streamFragNoise << "uniform vec2 noiseTextureSize;\n";
+     streamFragNoise << "uniform vec2 texStartPos;\n";
+ 
++    // Upsampling + Noise
+     streamFragNoise << "void main(void)\n";
+     streamFragNoise << "{\n";
++    streamFragNoise << "    vec2 uv = vec2(gl_FragCoord.xy / renderTextureSize);\n";
+     streamFragNoise << "    vec2 uvNoise = vec2((texStartPos.xy + gl_FragCoord.xy) / noiseTextureSize);\n";
+     streamFragNoise << "    \n";
+-    streamFragNoise << "    " << fragColor << " = vec4(" << texture2D << "(texUnit, uvNoise).rrr, 0);\n";
++    streamFragNoise << "    vec4 sum = " << texture2D << "(texUnit, uv + vec2(-halfpixel.x * 2.0, 0.0) * offset);\n";
++    streamFragNoise << "    sum += " << texture2D << "(texUnit, uv + vec2(-halfpixel.x, halfpixel.y) * offset) * 2.0;\n";
++    streamFragNoise << "    sum += " << texture2D << "(texUnit, uv + vec2(0.0, halfpixel.y * 2.0) * offset);\n";
++    streamFragNoise << "    sum += " << texture2D << "(texUnit, uv + vec2(halfpixel.x, halfpixel.y) * offset) * 2.0;\n";
++    streamFragNoise << "    sum += " << texture2D << "(texUnit, uv + vec2(halfpixel.x * 2.0, 0.0) * offset);\n";
++    streamFragNoise << "    sum += " << texture2D << "(texUnit, uv + vec2(halfpixel.x, -halfpixel.y) * offset) * 2.0;\n";
++    streamFragNoise << "    sum += " << texture2D << "(texUnit, uv + vec2(0.0, -halfpixel.y * 2.0) * offset);\n";
++    streamFragNoise << "    sum += " << texture2D << "(texUnit, uv + vec2(-halfpixel.x, -halfpixel.y) * offset) * 2.0;\n";
++    streamFragNoise << "    \n";
++    streamFragNoise << "    " << fragColor << " = sum / 12.0 - (vec4(0.5, 0.5, 0.5, 0) - vec4(" << texture2D << "(noiseTexUnit, uvNoise).rrr, 0));\n";
+     streamFragNoise << "}\n";
+ 
+     streamFragNoise.flush();
+-    
++
+     m_shaderDownsample.reset(ShaderManager::instance()->loadShaderFromCode(vertexSource, fragmentDownSource));
+     m_shaderUpsample.reset(ShaderManager::instance()->loadShaderFromCode(vertexSource, fragmentUpSource));
+     m_shaderCopysample.reset(ShaderManager::instance()->loadShaderFromCode(vertexSource, fragmentCopySource));
+     m_shaderNoisesample.reset(ShaderManager::instance()->loadShaderFromCode(vertexSource, fragmentNoiseSource));
+-    
++
+     m_valid = m_shaderDownsample->isValid() &&
+-              m_shaderUpsample->isValid() &&
+-              m_shaderCopysample->isValid() &&
+-              m_shaderNoisesample->isValid();
+-    
++        m_shaderUpsample->isValid() &&
++        m_shaderCopysample->isValid() &&
++        m_shaderNoisesample->isValid();
++
+     if (m_valid) {
+         m_mvpMatrixLocationDownsample = m_shaderDownsample->uniformLocation("modelViewProjectionMatrix");
+         m_offsetLocationDownsample = m_shaderDownsample->uniformLocation("offset");
+@@ -215,6 +241,9 @@ BlurShader::BlurShader(QObject *parent)
+         m_shaderNoisesample->setUniform(m_texStartPosLocationNoisesample, QVector2D(1.0, 1.0));
+         m_shaderNoisesample->setUniform(m_halfpixelLocationNoisesample, QVector2D(1.0, 1.0));
+ 
++        glUniform1i(m_shaderNoisesample->uniformLocation("texUnit"), 0);
++        glUniform1i(m_shaderNoisesample->uniformLocation("noiseTexUnit"), 1);
++
+         ShaderManager::instance()->popShader();
+     }
+ }
+@@ -399,7 +428,7 @@ void BlurShader::bind(SampleType sampleT
+     case NoiseSampleType:
+         ShaderManager::instance()->pushShader(m_shaderNoisesample.data());
+         break;
+-    
++
+     default:
+         Q_UNREACHABLE();
+         break;
+diff --color -rupN ./a/src/blurshader.h ./b/src/blurshader.h
+--- ./a/src/blurshader.h	2022-04-25 12:10:00.000000000 +0200
++++ ./b/src/blurshader.h	2021-10-22 21:28:08.000000000 +0200
+@@ -1,9 +1,22 @@
+ /*
+-    SPDX-FileCopyrightText: 2010 Fredrik Höglund <fredrik@kde.org>
+-    SPDX-FileCopyrightText: 2018 Alex Nemeth <alex.nemeth329@gmail.com>
+-
+-    SPDX-License-Identifier: GPL-2.0-or-later
+-*/
++ *   Copyright © 2010 Fredrik Höglund <fredrik@kde.org>
++ *   Copyright © 2018 Alex Nemeth <alex.nemeth329@gmail.com>
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 2 of the License, or
++ *   (at your option) any later version.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ *   General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program; see the file COPYING.  if not, write to
++ *   the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
++ *   Boston, MA 02110-1301, USA.
++ */
+ 
+ #ifndef BLURSHADER_H
+ #define BLURSHADER_H
+@@ -33,7 +46,7 @@ public:
+         DownSampleType,
+         UpSampleType,
+         CopySampleType,
+-        NoiseSampleType,
++        NoiseSampleType
+     };
+ 
+     void bind(SampleType sampleType);
+diff --color -rupN ./a/src/CMakeLists.txt ./b/src/CMakeLists.txt
+--- ./a/src/CMakeLists.txt	2022-04-25 12:10:00.000000000 +0200
++++ ./b/src/CMakeLists.txt	2022-11-04 12:56:20.425455806 +0100
+@@ -10,10 +10,10 @@ kconfig_add_kcfg_files(effect_SRCS
+     blurconfig.kcfgc
+ )
+ 
+-find_package(KWaylandServer CONFIG REQUIRED)
+-set_package_properties(KWaylandServer PROPERTIES
++find_package(KF5Wayland ${KF5_MIN_VERSION} CONFIG)
++set_package_properties(KF5Wayland PROPERTIES
++    PURPOSE "Required to build wayland platform plugin and tests"
+     TYPE REQUIRED
+-    PURPOSE "For Wayland integration"
+ )
+ 
+ add_library(kwin4_effect_blur2 SHARED ${effect_SRCS})
+@@ -25,10 +25,11 @@ target_link_libraries(kwin4_effect_blur2
+     KF5::ConfigGui
+     KF5::CoreAddons
+     KF5::WindowSystem
+-    Plasma::KWaylandServer
++#    Plasma::KWaylandServer
++    KF5::WaylandServer
+     kwineffects::kwineffects
+     kwineffects::kwinglutils
+-    epoxy::epoxy
++    ${epoxy_LIBRARY}
+ )
+ 
+ install(
+diff --color -rupN ./a/src/plugin.cpp ./b/src/plugin.cpp
+--- ./a/src/plugin.cpp	2022-04-25 12:10:00.000000000 +0200
++++ ./b/src/plugin.cpp	2022-11-04 10:05:20.023559648 +0100
+@@ -6,14 +6,13 @@
+ 
+ #include "blur.h"
+ 
++
+ namespace KWin
+ {
+ 
+-KWIN_EFFECT_FACTORY_SUPPORTED_ENABLED(BlurEffect,
+-                                      "metadata.json",
+-                                      return BlurEffect::supported();,
+-                                      return BlurEffect::enabledByDefault();)
+-
+-} // namespace KWin
+-
++KWIN_EFFECT_FACTORY_ENABLED(BlurEffectFactory,
++                            BlurEffect,
++                            "metadata.json",
++                            return false;)
+ #include "plugin.moc"
++}
+\ Brak znaku nowej linii na końcu pliku
