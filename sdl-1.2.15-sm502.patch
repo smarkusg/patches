@@ -1,0 +1,156 @@
+diff --color -rupN org/SDL_os4video.c new/SDL_os4video.c
+--- org/SDL_os4video.c	2023-11-04 08:40:26.730814470 +0100
++++ new/SDL_os4video.c	2023-10-18 12:46:00.000000000 +0200
+@@ -43,6 +43,14 @@
+ //#define DEBUG
+ #include "../../main/amigaos4/SDL_os4debug.h"
+ 
++#define QEMU_SAM_ALTIVEC_HACK
++
++#ifdef QEMU_SAM_ALTIVEC_HACK 
++#include <proto/expansion.h>
++#include "SDL_cpuinfo.h"
++static struct Screen *         the_screen      = NULL;
++#endif
++
+ typedef enum
+ {
+ 	EKeepContext,
+@@ -116,7 +124,9 @@ static struct Library	*iconbase;
+ static struct Library	*workbenchbase;
+ static struct Library	*keymapbase;
+ static struct Library   *dosbase;
+-
++//markus
++static struct Library   *expansion;
++//
+ struct GraphicsIFace	*SDL_IGraphics;
+ struct LayersIFace		*SDL_ILayers;
+ struct IntuitionIFace	*SDL_IIntuition;
+@@ -124,7 +134,9 @@ struct IconIFace		*SDL_IIcon;
+ struct WorkbenchIFace	*SDL_IWorkbench;
+ struct KeymapIFace		*SDL_IKeymap;
+ struct DOSIFace         *SDL_IDos;
+-
++//markus
++struct ExpansionIFace    *SDL_IExpansion;
++//
+ #define MIN_LIB_VERSION	51
+ 
+ static BOOL
+@@ -137,7 +149,10 @@ os4video_OpenLibraries(void)
+ 	workbenchbase = IExec->OpenLibrary("workbench.library", MIN_LIB_VERSION);
+ 	keymapbase    = IExec->OpenLibrary("keymap.library", MIN_LIB_VERSION);
+ 	dosbase       = IExec->OpenLibrary("dos.library", MIN_LIB_VERSION);
++//markus
++	expansion     = IExec->OpenLibrary("expansion.library", MIN_LIB_VERSION);
+ 
++//
+ 	if (!gfxbase || !layersbase || !intuitionbase || !iconbase || !workbenchbase || !keymapbase || !dosbase)
+ 		return FALSE;
+ 
+@@ -148,6 +163,9 @@ os4video_OpenLibraries(void)
+ 	SDL_IWorkbench = (struct WorkbenchIFace *) IExec->GetInterface(workbenchbase, "main", 1, NULL);
+ 	SDL_IKeymap    = (struct KeymapIFace *)    IExec->GetInterface(keymapbase, "main", 1, NULL);
+ 	SDL_IDos       = (struct DOSIFace *)       IExec->GetInterface(dosbase, "main", 1, NULL);
++//markus
++	SDL_IExpansion = (struct ExpansionIFace *)   IExec->GetInterface(expansion, "main", 1, NULL);
++//
+ 
+ 	if (!SDL_IGraphics || !SDL_ILayers || !SDL_IIntuition || !SDL_IIcon || !SDL_IWorkbench || !SDL_IKeymap || !SDL_IDos)
+ 		return FALSE;
+@@ -158,6 +176,12 @@ os4video_OpenLibraries(void)
+ static void
+ os4video_CloseLibraries(void)
+ {
++//markus
++	if (SDL_IExpansion) {
++		IExec->DropInterface((struct Interface *) SDL_IExpansion);
++		SDL_IExpansion = NULL;
++	}
++//
+ 	if (SDL_IDos) {
+ 		IExec->DropInterface((struct Interface *) SDL_IDos);
+ 		SDL_IDos = NULL;
+@@ -187,6 +211,12 @@ os4video_CloseLibraries(void)
+ 		SDL_IGraphics = NULL;
+ 	}
+ 
++//markus
++	if (expansion) {
++		IExec->CloseLibrary(expansion);
++		expansion = NULL;
++	}
++//
+ 	if (dosbase) {
+ 		IExec->CloseLibrary(dosbase);
+ 		dosbase = NULL;
+@@ -1371,7 +1401,47 @@ os4video_CreateDisplay(_THIS, SDL_Surfac
+ {
+ 	struct SDL_PrivateVideoData *hidden = _this->hidden;
+ 	struct Screen *screen;
++#ifdef QEMU_SAM_ALTIVEC_HACK
++	int force_bpp=16;
++/* markus from mplayer vo_comp_yuv2.c */
++	struct DisplayInfo display_info;
++	char *ChipDriverName = 0;
++	ULONG DisplayID = 0;
++        BOOL have_sm502 = FALSE;
++/* end markus from mplayer*/
++/*markus GetMachne to check if it is Pegasos 2*/
++	BOOL is_peg2 = FALSE;
++        char *machinestr = 0;
++/* end machineinfo */
++#endif
+ 	int screenDepth;
++        uint32 modeId;
++
++#ifdef QEMU_SAM_ALTIVEC_HACK
++/* markus from mplayer vo_comp_yuv2.c */
++	SDL_IIntuition->GetScreenAttr( the_screen, SA_DisplayID, &DisplayID , sizeof(DisplayID)  );
++	SDL_IGraphics->GetDisplayInfoData( NULL, &display_info, sizeof(display_info) , DTAG_DISP, DisplayID);
++	SDL_IGraphics->GetBoardDataTags( display_info.RTGBoardNum, GBD_ChipDriver, &ChipDriverName, TAG_END);
++                if (strcasecmp(ChipDriverName,"SiliconMotion502.chip") == 0)
++		{
++			have_sm502 = TRUE;
++                        dprintf("Welcome SiliconMotion502.chip\n");
++		}
++/*markus Pegasos 2 check */
++       SDL_IExpansion->GetMachineInfoTags(GMIT_MachineString, &machinestr, TAG_END);
++	       if (strcasecmp(machinestr,"Pegasos II") == 0)
++	        {
++			is_peg2 = TRUE;
++                        dprintf("Welcome Pegasos 2 hack ;-)\n");
++		}
++
++/* end from mplayer markus */
++
++	if (SDL_HasAltiVec() && (have_sm502 == TRUE) && (is_peg2 == TRUE))
++	{
++		bpp=32;
++        }
++#endif 
+ 
+ 	dprintf("Creating a %dx%dx%d %s display\n", width, height, bpp,
+ 		(flags & SDL_FULLSCREEN) ? "fullscreen" : "windowed");
+@@ -1406,7 +1476,19 @@ os4video_CreateDisplay(_THIS, SDL_Surfac
+ 
+ 	if (flags & SDL_FULLSCREEN)
+ 	{
+-		uint32 modeId = os4video_FindMode(width, height, bpp, flags | SDL_ANYFORMAT);
++
++#ifdef QEMU_SAM_ALTIVEC_HACK
++		if (SDL_HasAltiVec() && (have_sm502 == TRUE) && (is_peg2 == TRUE)) 
++		{
++			modeId = os4video_FindMode(width, height, force_bpp, flags | SDL_ANYFORMAT);
++		}
++		else
++		{
++		        modeId = os4video_FindMode(width, height, bpp, flags | SDL_ANYFORMAT);
++		}
++#else
++		modeId = os4video_FindMode(width, height, bpp, flags | SDL_ANYFORMAT);
++#endif
+ 
+ 		if (modeId == INVALID_ID)
+ 		{
