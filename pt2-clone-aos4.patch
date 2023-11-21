@@ -1,0 +1,361 @@
+diff --color -rupN org/inttypes.h new/inttypes.h
+--- org/inttypes.h	1970-01-01 01:00:00.000000000 +0100
++++ new/inttypes.h	2022-08-19 13:08:11.000000000 +0200
+@@ -0,0 +1,21 @@
++#ifndef INTTYPE_H
++#define INTTYPE_H
++
++typedef unsigned char uint8_t;
++typedef char int8_t;
++typedef unsigned int uint32_t;
++typedef int int32_t;
++typedef unsigned short uint16_t;
++typedef short int16_t;
++typedef unsigned long long uint64_t;
++typedef long long int64_t;
++
++typedef unsigned char Uint8;
++typedef char int8;
++typedef unsigned int Uint32;
++typedef int int32;
++typedef unsigned short Uint16;
++typedef short int16;
++typedef unsigned long long Uint64;
++typedef long long int64;
++#endif
+diff --color -rupN org/pt2_audio.c new/pt2_audio.c
+--- org/pt2_audio.c	2023-09-20 14:47:00.000000000 +0200
++++ new/pt2_audio.c	2023-10-19 13:36:35.000000000 +0200
+@@ -469,7 +469,11 @@ bool setupAudio(void)
+ 
+ 	want.freq = config.soundFrequency;
+ 	want.samples = (uint16_t)config.soundBufferSize;
++#if defined __amigaos4__
++	want.format = AUDIO_S16SYS;
++#else
+ 	want.format = AUDIO_S16;
++#endif
+ 	want.channels = 2;
+ 	want.callback = audioCallback;
+ 	want.userdata = NULL;
+@@ -489,7 +493,11 @@ bool setupAudio(void)
+ 		return false;
+ 	}
+ 
++#if defined __amigaos4__
++	if (have.format != AUDIO_S16SYS)
++#else
+ 	if (have.format != AUDIO_S16)
++#endif
+ 	{
+ 		showErrorMsgBox("Couldn't open audio device:\nThis program only supports 16-bit audio streams. Sorry!");
+ 		return false;
+diff --color -rupN org/pt2_diskop.c new/pt2_diskop.c
+--- org/pt2_diskop.c	2023-09-20 14:47:00.000000000 +0200
++++ new/pt2_diskop.c	2023-10-19 14:33:30.000000000 +0200
+@@ -98,9 +98,14 @@ static bool listEntry(fileEntry_t *f)
+ {
+ 	int32_t entryName = (int32_t)UNICHAR_STRLEN(f->nameU);
+ 
++//markus
+ #ifdef _WIN32
+ 	if (f->isDir && entryName == 2 && !UNICHAR_STRNICMP(f->nameU, "..", 2))
+ 		return true; // always show ".." directory
++#ifdef __amigaos4__
++	if (f->isDir && entryName == 2 && !UNICHAR_STRNICMP(f->nameU, "..", 2))
++		return true; // always show ".." directory
++#endif
+ #else
+ 	if (f->isDir && entryName == 2 && !UNICHAR_STRNICMP(f->nameU, "..", 2) && !(editor.currPath[0] == '/' && editor.currPath[1] == '\0'))
+ 		return true; // always show ".." directory (unless in root dir)
+@@ -416,7 +421,11 @@ bool changePathToDesktop(void)
+ 
+ 	return false;
+ #else
++#ifdef __amigaos4__
+ 	char *homePath = getenv("HOME");
++#else
++	char *homePath="PROGDIR:";
++#endif
+ 	if (homePath != NULL && chdir(homePath) == 0)
+ 	{
+ 		chdir("Desktop"); // keep home dir in case we couldn't change the dir to desktop
+@@ -430,7 +439,11 @@ bool changePathToDesktop(void)
+ #ifndef _WIN32
+ bool changePathToHome(void)
+ {
++#ifdef __amigaos4__
+ 	char *homePath = getenv("HOME");
++#else
++	char *homePath = "PROGDIR:";
++#endif
+ 	if (homePath != NULL && chdir(homePath) == 0)
+ 		return true;
+ 
+diff --color -rupN org/pt2_main.c new/pt2_main.c
+--- org/pt2_main.c	2023-09-20 14:47:00.000000000 +0200
++++ new/pt2_main.c	2023-11-13 08:31:03.646613823 +0100
+@@ -37,6 +37,11 @@
+ #include "pt2_replayer.h"
+ #include "pt2_textedit.h"
+ 
++#ifdef __amigaos4__
++    static const char *__attribute__((used)) stackcookie = "$STACK: 500000";
++    static const char *__attribute__((used)) version_tag = "$VER: pt2clone 1.65 git AMIGA_VERSION 0.2c (13.11.2023)";
++#endif
++
+ #define CRASH_TEXT "Oh no! The ProTracker 2 clone has crashed...\nA backup .mod was hopefully " \
+                    "saved to the current module directory.\n\nPlease report this bug if you can.\n" \
+                    "Try to mention what you did before the crash happened.\n" \
+@@ -106,11 +111,13 @@ static void clearStructs(void)
+ 
+ int main(int argc, char *argv[])
+ {
++#ifndef __amigaos4__
+ #ifndef _WIN32
+ 	struct sigaction act, oldAct;
+ #endif
++#endif //amigaos
+ 
+-#if defined _WIN32 || defined __APPLE__
++#if defined _WIN32 || defined __APPLE__ || defined __amigaos4__
+ 	SDL_version sdlVer;
+ #endif
+ 
+@@ -124,11 +131,13 @@ int main(int argc, char *argv[])
+ #pragma message("At least version 2.0.7 is recommended.")
+ #endif
+ 
++#ifndef __amigaos4__
+ 	SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH);
+ 	SDL_EnableScreenSaver(); // allow screensaver to activate
+-
++#endif
+ 	clearStructs();
+ 
++#ifndef __amigaos4__
+ 	// set up crash handler
+ #ifndef _DEBUG
+ #ifdef _WIN32
+@@ -145,9 +154,10 @@ int main(int argc, char *argv[])
+ 	sigaction(SIGSEGV, &act, &oldAct);
+ #endif
+ #endif
++#endif //amigaos
+ 
+ 	// on Windows and macOS, test what version SDL2.DLL is (against library version used in compilation)
+-#if defined _WIN32 || defined __APPLE__
++#if defined _WIN32 || defined __APPLE__ || defined __amigaos4__
+ 	SDL_GetVersion(&sdlVer);
+ 	if (sdlVer.major != SDL_MAJOR_VERSION || sdlVer.minor != SDL_MINOR_VERSION || sdlVer.patch != SDL_PATCHLEVEL)
+ 	{
+@@ -217,7 +227,8 @@ int main(int argc, char *argv[])
+ 	*/
+ 	SDL_StopTextInput();
+ 
+- #ifdef __APPLE__
++
++#ifdef __APPLE__
+ 	if (checkIfAppWasTranslocated(argc, argv))
+ 	{
+ 		SDL_Quit();
+@@ -666,6 +677,7 @@ static bool checkIfAppWasTranslocated(in
+ }
+ #endif
+ 
++//
+ // Windows specific routines
+ #ifdef _WIN32
+ static void disableWasapi(void)
+diff --color -rupN org/pt2_mod2wav.c new/pt2_mod2wav.c
+--- org/pt2_mod2wav.c	2023-09-20 14:47:00.000000000 +0200
++++ new/pt2_mod2wav.c	2023-11-13 15:49:57.876370040 +0100
+@@ -247,6 +247,9 @@ static int32_t SDLCALL mod2WavThreadFunc
+ 			ui.updateMod2WavDialog = true;
+ 		}
+ 
++//markus
++//todo fixme
++//
+ 		// write buffer to disk
+ 		if (samplesInChunk > 0)
+ 			fwrite(mod2WavBuffer, sizeof (int16_t), samplesInChunk * 2, f);
+@@ -281,6 +284,9 @@ static int32_t SDLCALL mod2WavThreadFunc
+ 	wavHeader.subchunk2Size = sampleCounter * sizeof (int16_t) * 2;
+ 
+ 	// write main header
++//markus
++//todo fixme
++//
+ 	fwrite(&wavHeader, sizeof (wavHeader_t), 1, f);
+ 	fclose(f);
+ 
+@@ -332,6 +338,12 @@ static int32_t SDLCALL mod2WavThreadFunc
+ 
+ bool mod2WavRender(char *filename)
+ {
++
++#ifdef __amigaos4__
++/*fixme markus AOS4 disable LE/BE bug */
++	displayErrorMsg("NOT CURRENTLY IMPLEMENTED"); 
++	return false;
++#endif
+ 	struct stat statBuffer;
+ 
+ 	lastFilename[0] = '\0';
+diff --color -rupN org/pt2_module_saver.c new/pt2_module_saver.c
+--- org/pt2_module_saver.c	2023-09-20 14:47:00.000000000 +0200
++++ new/pt2_module_saver.c	2023-11-08 13:28:01.403026747 +0100
+@@ -26,8 +26,11 @@ bool modSave(char *fileName)
+ 		moduleSample_t *s = &song->samples[i];
+ 
+ 		fwrite(s->text, 1, 22, f);
+-
++#if defined __amigaos4__
++		uint16_t length = SDL_SwapBE16(s->length >> 1);
++#else
+ 		uint16_t length = SWAP16(s->length >> 1);
++#endif
+ 		fwrite(&length, sizeof (int16_t), 1, f);
+ 
+ 		fputc(s->fineTune & 0xF, f);
+@@ -45,9 +48,13 @@ bool modSave(char *fileName)
+ 			loopLength = 2;
+ 		}
+ 
++#if defined __amigaos4__
++		uint16_t loopStart16 = SDL_SwapBE16(loopStart >> 1);
++		uint16_t loopLength16 = SDL_SwapBE16(loopLength >> 1);
++#else
+ 		uint16_t loopStart16 = SWAP16(loopStart >> 1);
+ 		uint16_t loopLength16 = SWAP16(loopLength >> 1);
+-
++#endif
+ 		fwrite(&loopStart16, sizeof (int16_t), 1, f);
+ 		fwrite(&loopLength16, sizeof (int16_t), 1, f);
+ 	}
+diff --color -rupN org/pt2_sample_saver.c new/pt2_sample_saver.c
+--- org/pt2_sample_saver.c	2023-09-20 14:47:00.000000000 +0200
++++ new/pt2_sample_saver.c	2023-11-13 15:49:13.377150609 +0100
+@@ -32,20 +32,32 @@ static void removeSampleFileExt(char *te
+ static void iffWriteChunkHeader(FILE *f, char *chunkName, uint32_t chunkLen)
+ {
+ 	fwrite(chunkName, sizeof (int32_t), 1, f);
+-	chunkLen = SWAP32(chunkLen);
++#if defined __amigaos4__
++	chunkLen = SDL_SwapBE32(chunkLen);
++#else
++        chunkLen = SWAP32(chunkLen);
++#endif
+ 	fwrite(&chunkLen, sizeof (int32_t), 1, f);
+ }
+ 
+ 
+ static void iffWriteUint32(FILE *f, uint32_t value)
+ {
+-	value = SWAP32(value);
++#if defined __amigaos4__
++        value = SDL_SwapBE32(value);
++#else
++        value = SWAP32(value);
++#endif
+ 	fwrite(&value, sizeof (int32_t), 1, f);
+ }
+ 
+ static void iffWriteUint16(FILE *f, uint16_t value)
+ {
+-	value = SWAP16(value);
++#if defined __amigaos4__
++	value = SDL_SwapBE16(value);
++#else
++        value = SWAP16(value);
++#endif
+ 	fwrite(&value, sizeof (int16_t), 1, f);
+ }
+ 
+diff --color -rupN org/pt2_sampling.c new/pt2_sampling.c
+--- org/pt2_sampling.c	2023-09-20 14:47:00.000000000 +0200
++++ new/pt2_sampling.c	2023-11-13 15:49:36.245777404 +0100
+@@ -275,16 +275,19 @@ static void SDLCALL samplingCallback(voi
+ 
+ static void stopInputAudio(void)
+ {
++
+ 	if (recordDev > 0)
+ 	{
+ 		SDL_CloseAudioDevice(recordDev);
+ 		recordDev = 0;
+ 	}
+ 	callbackBusy = false;
++
+ }
+ 
+ static void startInputAudio(void)
+ {
++
+ 	SDL_AudioSpec want, have;
+ 
+ 	if (recordDev > 0)
+@@ -300,19 +303,32 @@ static void startInputAudio(void)
+ 
+ 	memset(&want, 0, sizeof (SDL_AudioSpec));
+ 	want.freq = config.audioInputFrequency;
++#if defined __amigaos4__
++	want.format = AUDIO_S16SYS;
++#else
+ 	want.format = AUDIO_S16;
++#endif
+ 	want.channels = 2;
+ 	want.callback = samplingCallback;
+ 	want.userdata = NULL;
+ 	want.samples = SAMPLING_BUFFER_SIZE;
+ 
+ 	recordDev = SDL_OpenAudioDevice(audioInputDevs[selectedDev], true, &want, &have, 0);
+-	audioDevOpen = (recordDev != 0);
+ 
++#if defined __amigaos4__
++/* markus fixme  - block sampling!!!!*/
++     if (recordDev) {
++	audioDevOpen = false;
++        numAudioInputDevs = 0;
++	return;
++    }
++#endif
++	audioDevOpen = (recordDev != 0);
+ 	inputFrequency = have.freq;
+ 	inputBufferSize = have.samples;
+ 
+ 	SDL_PauseAudioDevice(recordDev, false);
++
+ }
+ 
+ static void selectAudioDevice(int32_t dev)
+@@ -580,10 +596,13 @@ void writeSampleMonitorWaveform(void) //
+ void removeSamplingBox(void)
+ {
+ 	stopInputAudio();
++
+ 	freeAudioDeviceList();
+ 
+ 	ui.aboutScreenShown = false;
++
+ 	editor.blockMarkFlag = false;
++
+ 	displayMainScreen();
+ 	updateVisualizer(); // kludge
+ 
+diff --color -rupN org/pt2_visuals.c new/pt2_visuals.c
+--- org/pt2_visuals.c	2023-09-20 14:47:00.000000000 +0200
++++ new/pt2_visuals.c	2023-11-08 11:07:29.418051437 +0100
+@@ -1980,7 +1980,11 @@ bool setupVideo(void)
+ 	}
+ 
+ 	// Workaround: SDL_GetGlobalMouseState() doesn't work with KMSDRM/Wayland
++#ifdef __amigaos4__
++	video.useDesktopMouseCoords = false;
++#else
+ 	video.useDesktopMouseCoords = true;
++#endif
+ 	const char *videoDriver = SDL_GetCurrentVideoDriver();
+ 	if (videoDriver != NULL && (strcmp("KMSDRM", videoDriver) == 0 || strcmp("wayland", videoDriver) == 0))
+ 		video.useDesktopMouseCoords = false;
