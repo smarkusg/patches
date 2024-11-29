@@ -1,0 +1,13 @@
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!! This is U-Boot for sam460ex emulation in QEMU. !!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+This is based on ACube's U-Boot 2015.c version and u-boot-sam460-20100605-fixed.patch for QEMU
+which itself has board specific changes compared to upstream U-Boot but this
+version has additional fixes and changes that were only tested on QEMU
+not on real hardware. Therefore you should not try to use it on real
+hardware as it may not work or may cause problems.
+
+Source:
+https://www.acube-systems.biz/download/u-boot-2015.c_prod.tar.gz
+http://goliat.eik.bme.hu/~balaton/qemu/u-boot-sam460-20100605-fixed.patch

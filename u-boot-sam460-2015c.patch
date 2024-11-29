@@ -1,0 +1,694 @@
+diff --color -rupN u-boot-2015.c.org/arch/powerpc/cpu/ppc4xx/44x_spd_ddr2.c u-boot-2015.c/arch/powerpc/cpu/ppc4xx/44x_spd_ddr2.c
+--- u-boot-2015.c.org/arch/powerpc/cpu/ppc4xx/44x_spd_ddr2.c	2022-12-17 16:24:47.000000000 +0100
++++ u-boot-2015.c/arch/powerpc/cpu/ppc4xx/44x_spd_ddr2.c	2024-11-29 11:17:17.597288025 +0100
+@@ -1336,7 +1336,9 @@ static void program_initplr(unsigned lon
+ 			break;
+ 		}
+ 
+-#if 1
++//lol
++//#if 1
++#if 0
+ 		/*
+ 		 * ToDo - Still a problem with the write recovery:
+ 		 * On the Corsair CM2X512-5400C4 module, setting write recovery
+@@ -1868,6 +1870,15 @@ static void program_tr(unsigned long *di
+ 
+ 	PPC4xx_SYS_INFO board_cfg;
+ 
++//lol
++#ifdef CONFIG_SAM460EX
++	int ddr2_boost = 0;
++	char s[32] = { 0 };
++
++	getenv_r("ddr2_boost", s, 32);
++	if (strcmp(s,"1") == 0) ddr2_boost = 1;
++#endif
++
+ 	/*------------------------------------------------------------------
+ 	 * Get the board configuration info.
+ 	 *-----------------------------------------------------------------*/
+@@ -1917,6 +1928,7 @@ static void program_tr(unsigned long *di
+ 		   SDRAM_SDTR1_WTWO_MASK | SDRAM_SDTR1_RTRO_MASK);
+ 
+ 	/* default values */
++/* lol
+ #ifdef CONFIG_SAM460EX	
+ 	if (gd->flags & GD_FLG_DDR2_BOOST_READ)
+ 		sdtr1 |= SDRAM_SDTR1_LDOF_1_CLK;
+@@ -1924,6 +1936,13 @@ static void program_tr(unsigned long *di
+ #endif
+ 		sdtr1 |= SDRAM_SDTR1_LDOF_2_CLK;
+ 	sdtr1 |= SDRAM_SDTR1_RTW_2_CLK;
++*/
++	if (ddr2_boost)
++		sdtr1 |= SDRAM_SDTR1_LDOF_1_CLK;
++	else 
++		sdtr1 |= SDRAM_SDTR1_LDOF_2_CLK;
++ 	sdtr1 |= SDRAM_SDTR1_RTW_2_CLK;
++//end lol
+ 
+ 	/* normal operations */
+ 	sdtr1 |= SDRAM_SDTR1_WTWO_0_CLK;
+diff --color -rupN u-boot-2015.c.org/board/ACube/common/cmd_boota.c u-boot-2015.c/board/ACube/common/cmd_boota.c
+--- u-boot-2015.c.org/board/ACube/common/cmd_boota.c	2024-05-15 12:53:36.000000000 +0200
++++ u-boot-2015.c/board/ACube/common/cmd_boota.c	2024-11-29 11:03:01.985547697 +0100
+@@ -304,19 +304,25 @@ int do_boota(cmd_tbl_t * cmdtp, int flag
+ 	env = getenv("boot1");
+ 	if(env) {
+ 		PRINTF("found: %s\n",env);
+-		if(is_good_bootsource(env)) argarray[argcnt++]=env;
++//lol
++//		if(is_good_bootsource(env)) argarray[argcnt++]=env;
++		if(is_good_bootsource(env)) argarray[argcnt++]=strdup(env);
+ 	}
+ 
+ 	env = getenv("boot2");
+ 	if(env) {
+ 		PRINTF("found: %s\n",env);
+-		if(is_good_bootsource(env)) argarray[argcnt++]=env;
++//lol
++//		if(is_good_bootsource(env)) argarray[argcnt++]=env;
++		if(is_good_bootsource(env)) argarray[argcnt++]=strdup(env);
+ 	}
+ 
+ 	env = getenv("boot3");
+ 	if(env) {
+ 		PRINTF("found: %s\n",env);
+-		if(is_good_bootsource(env)) argarray[argcnt++]=env;
++//lol
++//		if(is_good_bootsource(env)) argarray[argcnt++]=env;
++		if(is_good_bootsource(env)) argarray[argcnt++]=strdup(env);
+ 	}
+ 
+ 	PRINTF("First-level bootloader: got %u valid boot sources\n", argcnt);
+diff --color -rupN u-boot-2015.c.org/board/ACube/common/sam_ide.c u-boot-2015.c/board/ACube/common/sam_ide.c
+--- u-boot-2015.c.org/board/ACube/common/sam_ide.c	2024-05-04 16:19:48.000000000 +0200
++++ u-boot-2015.c/board/ACube/common/sam_ide.c	2024-11-29 11:09:16.853949051 +0100
+@@ -1150,7 +1150,10 @@ static unsigned char local_atapi_issue(i
+ 
+ 	local_output_data_shorts (device, (unsigned short *)ccb,ccblen/2, cc); /* write command block */
+  	/* ATAPI Command written wait for completition */
+-	udelay (5000); /* device must set bsy */
++//lol
++//	udelay (5000); /* device must set bsy */
++	/* Was 5000 in the original firmware, for QEMU we could get rid of it */
++	udelay (50); /* device must set bsy */
+ 
+ 	mask = ATA_STAT_DRQ|ATA_STAT_BUSY|ATA_STAT_ERR;
+ 	/* if no data wait for DRQ = 0 BSY = 0
+@@ -1208,7 +1211,11 @@ static unsigned char local_atapi_issue(i
+ 			local_input_data_shorts(device,(unsigned short *)buffer,n, cc);
+ 		}
+ 	}
+-	udelay(5000); /* seems that some CD ROMs need this... */
++//lol
++//	udelay(5000); /* seems that some CD ROMs need this... */
++	/* Was 5000 in the original firmware, for QEMU we could get rid of it */
++	udelay(50); /* seems that some CD ROMs need this... */
++
+ 	mask = ATA_STAT_BUSY|ATA_STAT_ERR;
+ 	res=0;
+ 	c = local_atapi_wait_mask(device,ATAPI_TIME_OUT,mask,res, cc);
+diff --color -rupN u-boot-2015.c.org/board/ACube/common/sys_dep.c u-boot-2015.c/board/ACube/common/sys_dep.c
+--- u-boot-2015.c.org/board/ACube/common/sys_dep.c	2024-05-15 11:01:01.000000000 +0200
++++ u-boot-2015.c/board/ACube/common/sys_dep.c	2024-11-29 11:10:21.897456319 +0100
+@@ -148,6 +148,8 @@ SCAN_HANDLE start_unit_scan(const void *
+ 	struct dev_access_entry * dae_found;
+ 	//printf("entered start_unit_scan\n");
+ 
++//lol
++       if (!scan_list || !blocksize) return NULL;
+ 	//floppy_like_an_hd.block_read = internal_floppy_block_read;
+ 
+ 	/* This routine builds a list of scan handles from the env-vars passed in scan_list. */
+diff --color -rupN u-boot-2015.c.org/board/ACube/menu/bios_menu.c u-boot-2015.c/board/ACube/menu/bios_menu.c
+--- u-boot-2015.c.org/board/ACube/menu/bios_menu.c	2024-05-11 21:06:18.000000000 +0200
++++ u-boot-2015.c/board/ACube/menu/bios_menu.c	2024-11-29 10:48:36.960411597 +0100
+@@ -436,8 +436,9 @@ menu_t *make_sysinfo_menu(form_t *form)
+ 		sprintf(buffer, " DDR2 freq : %4ld MHz", 2 * sysinfo.freqDDR / 1000000);
+ 		item = menu_item_create(ITEMTYPE_LABEL, menu, mystrdup(buffer));
+ 
+-		sprintf(buffer, " CLK freq  : %4ld MHz", CONFIG_SYS_CLK_FREQ / 1000000);
+-		item = menu_item_create(ITEMTYPE_LABEL, menu, mystrdup(buffer));
++//lol
++//		sprintf(buffer, " CLK freq  : %4ld MHz", CONFIG_SYS_CLK_FREQ / 1000000);
++//		item = menu_item_create(ITEMTYPE_LABEL, menu, mystrdup(buffer));
+ #else
+ 		sprintf(buffer, " DDR freq  : %4ld MHz", 2 * sysinfo.freqPLB / 1000000);
+ 		item = menu_item_create(ITEMTYPE_LABEL, menu, mystrdup(buffer));
+diff --color -rupN u-boot-2015.c.org/board/ACube/Sam460ex/Sam460ex.c u-boot-2015.c/board/ACube/Sam460ex/Sam460ex.c
+--- u-boot-2015.c.org/board/ACube/Sam460ex/Sam460ex.c	2024-05-14 22:51:34.000000000 +0200
++++ u-boot-2015.c/board/ACube/Sam460ex/Sam460ex.c	2024-11-29 10:40:38.759123772 +0100
+@@ -69,7 +69,9 @@ extern struct FrameBufferInfo *fbi;
+ extern struct pci_controller *ppc460_hose;
+ 
+ extern unsigned char SM502INIT;
+-extern unsigned char PM2INIT;
++//lol
++//extern unsigned char PM2INIT;
++unsigned char PM2INIT = 0;
+ 
+ unsigned char ACTIVATESM502 = 0;
+ unsigned char model_value = 0;
+@@ -466,6 +468,8 @@ int last_stage_init (void)
+ 	{
+ 		// nothing to be done here...
+ 	}
++//lol
++/*
+ 	else if (PM2INIT)
+ 	{
+ 		pci_read_config_word(dev_pm2, PCI_COMMAND, &cmd);
+@@ -488,6 +492,7 @@ int last_stage_init (void)
+ 			drv_video_init();
+ 		}
+ 	}
++*/
+ 
+ 	// custom silent mode ----------------------------------------------------
+ 	int hush = 0;
+diff --color -rupN u-boot-2015.c.org/config.mk u-boot-2015.c/config.mk
+--- u-boot-2015.c.org/config.mk	2022-12-17 16:24:47.000000000 +0100
++++ u-boot-2015.c/config.mk	2024-11-29 09:59:11.062970207 +0100
+@@ -46,7 +46,7 @@ PLATFORM_LDFLAGS =
+ 
+ #########################################################################
+ 
+-HOSTCFLAGS	= -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer \
++HOSTCFLAGS	= -fgnu89-inline -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer \
+ 		  $(HOSTCPPFLAGS)
+ HOSTSTRIP	= strip
+ 
+@@ -183,10 +183,10 @@ CPPFLAGS += -fno-builtin -ffreestanding
+ 	-isystem $(gccincdir) -pipe $(PLATFORM_CPPFLAGS)
+ 
+ ifdef BUILD_TAG
+-CFLAGS := $(CPPFLAGS) -Wall -Wstrict-prototypes \
++CFLAGS := $(CPPFLAGS) -fgnu89-inline -Wall -Wstrict-prototypes \
+ 	-DBUILD_TAG='"$(BUILD_TAG)"'
+ else
+-CFLAGS := $(CPPFLAGS) -Wall -Wstrict-prototypes
++CFLAGS := $(CPPFLAGS) -fgnu89-inline -Wall -Wstrict-prototypes
+ endif
+ 
+ CFLAGS += $(call cc-option,-fno-stack-protector)
+diff --color -rupN u-boot-2015.c.org/include/configs/Sam460ex.h u-boot-2015.c/include/configs/Sam460ex.h
+--- u-boot-2015.c.org/include/configs/Sam460ex.h	2024-05-14 23:10:31.000000000 +0200
++++ u-boot-2015.c/include/configs/Sam460ex.h	2024-11-29 10:44:03.078901402 +0100
+@@ -1,6 +1,6 @@
+ /*
+- * (C) Copyright 2009-2024
+- * Max Tretene, ACube Systems Srl. mtretene@acube-systems.com.
++ * (C) Copyright 2008
++ * Stefan Roese, DENX Software Engineering, sr@denx.de.
+  *
+  * This program is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU General Public License as
+@@ -9,7 +9,7 @@
+  *
+  * This program is distributed in the hope that it will be useful,
+  * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	 See the
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  * GNU General Public License for more details.
+  *
+  * You should have received a copy of the GNU General Public License
+@@ -19,7 +19,7 @@
+  */
+ 
+ /************************************************************************
+- * Sam460ex.h - configuration for Sam460ex/cr/le (460EX)
++ * canyonlands.h - configuration for Canyonlands (460EX)
+  ***********************************************************************/
+ #ifndef __CONFIG_H
+ #define __CONFIG_H
+@@ -37,7 +37,9 @@
+ #define CONFIG_440			1
+ #define CONFIG_4xx			1	/* ... PPC4xx family */
+ 
+-#define CONFIG_BOARD_RESET	  1
++#define CONFIG_SYS_CLK_FREQ	50000000	/* external freq to pll	*/
++
++#define CONFIG_BOARD_RESET    1
+ 
+ #define CONFIG_SYS_SDRAM_BASE	0x00000000	/* _must_ be 0		*/
+ #define CONFIG_SYS_MONITOR_BASE	TEXT_BASE	/* Start of U-Boot	*/
+@@ -56,8 +58,8 @@
+  * Base addresses -- Note these are effective addresses where the
+  * actual resources get mapped (not physical addresses)
+  *----------------------------------------------------------------------*/
+-#define CONFIG_SYS_PCI_64BIT	1
+-
++#define CONFIG_SYS_PCI_64BIT    1
++ 
+ #define CONFIG_SYS_PCI_MEMBASE	0x80000000	/* mapped PCI memory region1 */
+ #define CONFIG_SYS_PCI_BASE		0xd0000000	/* internal PCI regs	*/
+ #define CONFIG_SYS_PCI_TARGBASE	CONFIG_SYS_PCI_MEMBASE
+@@ -73,8 +75,8 @@
+ #define CONFIG_SYS_PCIE0_XCFGBASE	0xE3000000
+ #define CONFIG_SYS_PCIE1_XCFGBASE	0xE3001000
+ 
+-#define CONFIG_SYS_PCIE_IOBASE		0x0
+-#define CONFIG_SYS_PCIE_IOSIZE		0x10000
++#define CONFIG_SYS_PCIE_IOBASE      0x0
++#define CONFIG_SYS_PCIE_IOSIZE      0x10000
+ 
+ #define	CONFIG_SYS_PCIE0_UTLBASE	0xc08010000ULL	/* 36bit physical addr	*/
+ 
+@@ -85,8 +87,8 @@
+ #define CONFIG_SYS_FPGA_BASE		0xFF000000
+ #define CONFIG_SYS_FLASH_BASE		0xFFF00000	/* later mapped to this addr */
+ #define CONFIG_SYS_FLASH_SIZE		(1 << 20)
+-#define CONFIG_SYS_FLASH_BASE_PHYS_H	0x4
+-#define CONFIG_SYS_FLASH_BASE_PHYS_L	CONFIG_SYS_FLASH_BASE
++#define CONFIG_SYS_FLASH_BASE_PHYS_H 	0x4
++#define CONFIG_SYS_FLASH_BASE_PHYS_L 	CONFIG_SYS_FLASH_BASE
+ 
+ #define CONFIG_SYS_BOOT_BASE_ADDR	0xF0000000	/* EBC Boot Space: 0xFF000000 */
+ 
+@@ -115,7 +117,7 @@
+ #define CONFIG_BAUDRATE		115200
+ #define CONFIG_SERIAL_MULTI
+ #define CONFIG_SYS_BAUDRATE_TABLE  \
+-	{300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400}
++    {300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400}
+ #undef CONFIG_UART1_CONSOLE	/* define this if you want console on UART1 */
+ 
+ /*-----------------------------------------------------------------------
+@@ -152,15 +154,15 @@
+  * Define the partitioning of the NAND chip (only RAM U-Boot is needed here)
+  */
+ #define CONFIG_SYS_NAND_U_BOOT_OFFS	(128 << 10)	/* Offset to RAM U-Boot image */
+-#define CONFIG_SYS_NAND_U_BOOT_SIZE	(1 << 20)	/* Size of RAM U-Boot image	  */
++#define CONFIG_SYS_NAND_U_BOOT_SIZE	(1 << 20)	/* Size of RAM U-Boot image   */
+ 
+ /*
+  * Now the NAND chip has to be defined (no autodetection used!)
+  */
+-#define CONFIG_SYS_NAND_PAGE_SIZE	(2 << 10)	/* NAND chip page size		  */
+-#define CONFIG_SYS_NAND_BLOCK_SIZE	(128 << 10)	/* NAND chip block size		  */
++#define CONFIG_SYS_NAND_PAGE_SIZE	(2 << 10)	/* NAND chip page size	      */
++#define CONFIG_SYS_NAND_BLOCK_SIZE	(128 << 10)	/* NAND chip block size	      */
+ #define CONFIG_SYS_NAND_PAGE_COUNT	(CONFIG_SYS_NAND_BLOCK_SIZE / CONFIG_SYS_NAND_PAGE_SIZE)
+-						/* NAND chip page count		  */
++						/* NAND chip page count	      */
+ #define CONFIG_SYS_NAND_BAD_BLOCK_POS	0		/* Location of bad block marker*/
+ #define CONFIG_SYS_NAND_5_ADDR_CYCLE			/* Fifth addr used (<=128MB)  */
+ 
+@@ -188,6 +190,17 @@
+  *----------------------------------------------------------------------*/
+ #define CONFIG_SYS_NO_FLASH 1
+ 
++#define CONFIG_SYS_MAX_FLASH_BANKS	1	/* max number of memory banks		*/
++#define CONFIG_SYS_MAX_FLASH_SECT	11	/* max number of sectors on one chip	*/
++
++#define CONFIG_SYS_FLASH_ERASE_TOUT	150000	/* Timeout for Flash Erase (in ms)	*/
++#define CONFIG_SYS_FLASH_WRITE_TOUT	800	/* Timeout for Flash Write (in ms)	*/
++
++#define CONFIG_SYS_FLASH_EMPTY_INFO		/* print 'E' for empty sector on flinfo */
++
++#define CONFIG_SYS_FLASH_WORD_SIZE unsigned char
++#define CONFIG_SYS_FLASH_ADDR0 0x555
++#define CONFIG_SYS_FLASH_ADDR1 0x2aa
+ /*-----------------------------------------------------------------------
+  * NAND-FLASH related
+  *----------------------------------------------------------------------*/
+@@ -205,9 +218,9 @@
+  * code.
+  */
+ #define CONFIG_SPD_EEPROM		1			/* Use SPD EEPROM for setup	*/
+-#define SPD_EEPROM_ADDRESS		{0x50}		/* SPD i2c spd addresses*/
++#define SPD_EEPROM_ADDRESS		{0x50} 		/* SPD i2c spd addresses*/
+ #undef CONFIG_DDR_ECC
+-#define CONFIG_DDR_RQDC_FIXED	0x80000038	/* fixed value for RQDC	*/
++#define CONFIG_DDR_RQDC_FIXED	0x80000038 	/* fixed value for RQDC	*/
+ #endif
+ 
+ /*-----------------------------------------------------------------------
+@@ -247,7 +260,7 @@
+ #define CONFIG_NET_MULTI
+ #undef CONFIG_NETCONSOLE		/* include NetConsole support	*/
+ #define CONFIG_SYS_RX_ETH_BUFFER	4	/* number of eth rx buffers	*/
+-
++ 
+ #define CONFIG_IBM_EMAC4_V4	1
+ #define CONFIG_PHY_ADDR		0	/* PHY address, See schematics	*/
+ #define CONFIG_PHY1_ADDR	1
+@@ -296,46 +309,45 @@
+ /*
+  * Default environment variables
+  */
+-#define	CONFIG_EXTRA_ENV_SETTINGS			\
+-	"stdout=vga\0"							\
+-	"stdin=usbkbd\0"						\
+-	"hush=0\0"								\
+-	"ide_doreset=on\0"						\
+-	"ide_reset_timeout=15\0"				\
+-	"ide_cd_timeout=20\0"					\
+-	"pcie_mode=RP:RP\0"						\
+-	"pciconfighost=1\0"						\
+-	"ipaddr=192.168.2.50\0"					\
+-	"serverip=192.168.2.222\0"				\
+-	"ethaddr=00:50:C2:80:D5:00\0"			\
+-	"video_activate=pci\0"					\
+-	"menuboot_delay=2\0"					\
+-	"boota_timeout=2\0"						\
+-	"bootcmd=menu; run menuboot_cmd\0"		\
+-	"menucmd=menu\0"						\
+-	"menuboot_cmd=boota\0"					\
+-	"boot_method=boota\0"					\
+-	"boot1=s4siicdrom\0"					\
+-	"boot2=s4sii\0"							\
+-	"boot3=usb\0"							\
+-	"s4sii_maxbus=1\0"						\
+-	"os4_commandline=debuglevel=0\0"		\
++#define	CONFIG_EXTRA_ENV_SETTINGS		    \
++	"stdout=vga\0"	    			        \
++	"stdin=usbkbd\0"   					    \
++	"hush=0\0"                              \
++	"ide_doreset=on\0"					    \
++	"ide_reset_timeout=15\0"			    \
++	"ide_cd_timeout=20\0"				    \
++	"pcie_mode=RP:RP\0"					    \
++	"pciconfighost=1\0"                     \
++	"ipaddr=192.168.2.50\0"				    \
++	"serverip=192.168.2.222\0"			    \
++	"ethaddr=00:50:C2:80:D5:00\0"           \
++	"video_activate=pci\0"			    \
++	"menuboot_delay=2\0"                    \
++	"boota_timeout=2\0"                     \
++	"bootcmd=menu; run menuboot_cmd\0"	    \
++	"menucmd=menu\0"					    \
++	"menuboot_cmd=boota\0"				    \
++	"boot_method=boota\0"				    \
++	"boot1=ssiicdrom\0"					    \
++	"boot2=ssii\0"				            \
++	"boot3=usb\0"                           \
++	"os4_commandline=debuglevel=0\0"        \
+ 	"bootargs=root=/dev/sda3 console=tty0\0"\
+-	"serdes=pci-e\0"						\
+-	"usb_enable_4x0=1\0"					\
+-	"usb_retry=1\0"							\
+-	"usb_ohci_power_down_before_reset=1\0"	\
+-	"scan_usb_storage=1\0"
++	"serdes=sata2\0"                        \
++	"usb_enable_4x0=1\0"                    \
++	"usb_retry=1\0"                         \
++	"usb_ohci_power_down_before_reset=1\0"  \
++	"scan_usb_storage=1\0"						
+ 
+ /*
+  * Commands
+  */
+ 
+-#define CONFIG_CMD_BDI		/* bdinfo			*/
++#define CONFIG_CMD_BDI 		/* bdinfo			*/
+ #ifndef CONFIG_SYS_NO_FLASH
+ #define CONFIG_CMD_FLASH	/* flinfo, erase, protect	*/
+ #endif
+-#define CONFIG_CMD_MEMORY	/* md mm nm mw cp cmp crc base loop mtest */
++#define CONFIG_CMD_MEMORY 	/* md mm nm mw cp cmp crc base loop mtest */
+ #define CONFIG_CMD_NET		/* bootp, tftpboot, rarpboot	*/
+ #define CONFIG_CMD_RUN		/* run command in env variable	*/
+ #define CONFIG_CMD_SAVEENV	/* saveenv			*/
+@@ -346,10 +358,9 @@
+ 
+ #define CONFIG_CMD_EEPROM
+ #define CONFIG_CMD_ELF
+-#define CONFIG_CMD_FAT
+ #define CONFIG_CMD_I2C
+ #define CONFIG_CMD_MII
+-#define CONFIG_CMD_PING
++#define CONFIG_CMD_NET
+ 
+ #if defined(CONFIG_SYS_RAMBOOT)
+ /*
+@@ -363,6 +374,7 @@
+ #endif
+ 
+ #define CONFIG_CMD_DATE
++/* #define CONFIG_CMD_NAND */
+ #define CONFIG_CMD_PCI
+ #ifdef CONFIG_460EX
+ #define CONFIG_CMD_EXT2
+@@ -386,13 +398,13 @@
+ #define CFG_ISA_IO_BASE_ADDRESS	(CONFIG_SYS_PCI_BASE | 0x08000000) /* PCIX0_IOBASE */
+ 
+ /* Board-specific PCI */
+-#define CONFIG_SYS_PCI_TARGET_INIT		/* let board init pci target	*/
++#define CONFIG_SYS_PCI_TARGET_INIT		/* let board init pci target    */
+ #define	CONFIG_SYS_PCI_MASTER_INIT
+ 
+ #define CONFIG_SYS_PCI_SUBSYS_VENDORID 0x1014	/* IBM				*/
+ #define CONFIG_SYS_PCI_SUBSYS_DEVICEID 0xcafe	/* Whatever			*/
+ 
+-#define CONFIG_SYS_SCSI_SCAN_BUS_REVERSE		/* Don't touch */
++#define CONFIG_SYS_SCSI_SCAN_BUS_REVERSE  		/* Don't touch */
+ 
+ /*
+  * SATA driver setup
+@@ -405,24 +417,10 @@
+ /* Convert sectorsize to wordsize */
+ #define ATA_SECTOR_WORDS (ATA_SECT_SIZE/2)
+ 
+-/* SATA2 PCI-E */
+-/*
+-#define CONFIG_SATA_SIL
+-
+-#define CONFIG_CMD_SCSI
+-#define CONFIG_LIBATA
+-#define CONFIG_SCSI_AHCI
+-#define CONFIG_SYS_SCSI_MAX_SCSI_ID	1
+-#define CONFIG_SYS_SCSI_MAX_LUN		1
+-#define CONFIG_SYS_SCSI_MAX_DEVICE	(CONFIG_SYS_SCSI_MAX_SCSI_ID * \
+-						CONFIG_SYS_SCSI_MAX_LUN)
+-#define CONFIG_AHCI_SETFEATURES_XFER
+-*/
+ /*-----------------------------------------------------------------------
+  * Video stuff
+  *----------------------------------------------------------------------*/
+ #define CONFIG_BIOSEMU
+-#define CONFIG_VIDEO_PERMEDIA2
+ #define CONFIG_VIDEO_SM502
+ #define CONFIG_VIDEO_SM501_8BPP
+ 
+@@ -444,15 +442,25 @@
+ #define CONFIG_SYS_ATA_DATA_OFFSET	0
+ #define CONFIG_SYS_ATA_ALT_OFFSET	0x0200
+ 
++/*
++#define CONFIG_CMD_SCSI
++#define SCSI_VEND_ID 0x197b
++#define SCSI_DEV_ID  0x2363
++#define CONFIG_SCSI_AHCI
++#define CONFIG_SYS_SCSI_MAX_SCSI_ID	4
++#define CONFIG_SYS_SCSI_MAX_LUN	1
++#define CONFIG_SYS_SCSI_MAX_DEVICE	(CONFIG_SYS_SCSI_MAX_SCSI_ID * CONFIG_SYS_SCSI_MAX_LUN)
++#define CONFIG_SYS_SCSI_MAXDEVICE	CONFIG_SYS_SCSI_MAX_DEVICE
++*/ 
+ /*-----------------------------------------------------------------------
+  * External Bus Controller (EBC) Setup
+  *----------------------------------------------------------------------*/
+ 
+-/* Memory Bank 0 (NOR-FLASH) initialization	*/
++/* Memory Bank 0 (NOR-FLASH) initialization	*/				
+ #define CONFIG_SYS_EBC_PB0AP		0x06057240
+ #define CONFIG_SYS_EBC_PB0CR		0xfff18000 //(CONFIG_SYS_BOOT_BASE_ADDR | 0x18000)
+ 
+-/* Memory Bank 2 (FPGA) initialization	*/
++/* Memory Bank 2 (FPGA) initialization  */
+ #define CONFIG_SYS_EBC_PB2AP		0x7f8ffe80
+ #define CONFIG_SYS_EBC_PB2CR		(CONFIG_SYS_FPGA_BASE | 0x3a000) /* BAS=FPGA,BS=2MB,BU=R/W,BW=16bit*/
+ 
+@@ -460,7 +468,7 @@
+ /* #define CONFIG_SYS_EBC_PB3AP		0x018003c0 */
+ /* #define CONFIG_SYS_EBC_PB3CR		(CONFIG_SYS_NAND_ADDR | 0x1E000) *//* BAS=NAND,BS=1MB,BU=R/W,BW=32bit*/
+ 
+-#define CONFIG_SYS_EBC_CFG		0xB8400000		/*	EBC0_CFG */
++#define CONFIG_SYS_EBC_CFG		0xB8400000		/*  EBC0_CFG */
+ 
+ /*-----------------------------------------------------------------------
+  * Miscellaneous configurable options
+@@ -484,12 +492,12 @@
+ 
+ #define CONFIG_SYS_HZ			1000	/* decrementer freq: 1 ms ticks	*/
+ 
+-#undef CONFIG_CMDLINE_EDITING			/* add command line history	*/
+-#undef CONFIG_AUTO_COMPLETE				/* add autocompletion support	*/
+-#undef CONFIG_LOOPW						/* enable loopw command			*/
+-#undef CONFIG_MX_CYCLIC					/* enable mdc/mwc commands		*/
+-#define CONFIG_VERSION_VARIABLE			/* include version env variable */
+-#define CONFIG_ZERO_BOOTDELAY_CHECK		/* check for keypress on bootdelay==0 */
++#undef CONFIG_CMDLINE_EDITING		    /* add command line history	*/
++#undef CONFIG_AUTO_COMPLETE		        /* add autocompletion support	*/
++#undef CONFIG_LOOPW			            /* enable loopw command         */
++#undef CONFIG_MX_CYCLIC		            /* enable mdc/mwc commands      */
++#define CONFIG_ZERO_BOOTDELAY_CHECK	    /* check for keypress on bootdelay==0 */
++#define CONFIG_VERSION_VARIABLE 	    /* include version env variable */
+ #define CONFIG_SYS_CONSOLE_INFO_QUIET	/* don't print console @ startup*/
+ #define CONFIG_SILENT_CONSOLE
+ 
+@@ -498,8 +506,8 @@
+ #define	CONFIG_SYS_PROMPT_HUSH_PS2	"> "
+ #endif
+ 
+-#define CONFIG_LOADS_ECHO				1	 /* echo on for serial download	*/
+-#define CONFIG_SYS_LOADS_BAUD_CHANGE	1	 /* allow baudrate change	*/
++#define CONFIG_LOADS_ECHO		        1    /* echo on for serial download	*/
++#define CONFIG_SYS_LOADS_BAUD_CHANGE    1    /* allow baudrate change	*/
+ 
+ /*
+  * For booting Linux, the board info and command line data
+@@ -585,14 +593,14 @@
+ /* GPIO Core 1 */									\
+ {GPIO1_BASE, GPIO_OUT, GPIO_SEL , GPIO_OUT_1}, /* GPIO32 USER TP8 */ \
+ {GPIO1_BASE, GPIO_OUT, GPIO_SEL , GPIO_OUT_1}, /* GPIO33 USER TP10 */ \
+-{GPIO1_BASE, GPIO_IN , GPIO_ALT1, GPIO_OUT_NO_CHG}, /* GPIO34 UART0_DCD_N	UART1_DSR_CTS_N	UART2_SOUT*/ \
+-{GPIO1_BASE, GPIO_IN , GPIO_ALT1, GPIO_OUT_NO_CHG}, /* GPIO35 UART0_8PIN_DSR_N UART1_RTS_DTR_N UART2_SIN*/ \
+-{GPIO1_BASE, GPIO_IN , GPIO_ALT1, GPIO_OUT_NO_CHG}, /* GPIO36 UART0_8PIN_CTS_N DMAAck3	UART3_SIN*/ \
+-{GPIO1_BASE, GPIO_OUT, GPIO_ALT1, GPIO_OUT_NO_CHG}, /* GPIO37 UART0_RTS_N	EOT3/TC3	UART3_SOUT*/ \
+-{GPIO1_BASE, GPIO_OUT, GPIO_ALT1, GPIO_OUT_NO_CHG}, /* GPIO38 UART0_DTR_N	UART1_SOUT	*/	\
+-{GPIO1_BASE, GPIO_IN , GPIO_ALT1, GPIO_OUT_NO_CHG}, /* GPIO39 UART0_RI_N	UART1_SIN	*/	\
++{GPIO1_BASE, GPIO_OUT, GPIO_ALT3, GPIO_OUT_1}, /* GPIO34 UART0_DCD_N	UART1_DSR_CTS_N	UART2_SOUT*/ \
++{GPIO1_BASE, GPIO_IN , GPIO_ALT3, GPIO_OUT_0}, /* GPIO35 UART0_8PIN_DSR_N UART1_RTS_DTR_N UART2_SIN*/ \
++{GPIO1_BASE, GPIO_IN , GPIO_ALT3, GPIO_OUT_0}, /* GPIO36 UART0_8PIN_CTS_N DMAAck3	UART3_SIN*/ \
++{GPIO1_BASE, GPIO_BI , GPIO_ALT2, GPIO_OUT_0}, /* GPIO37 UART0_RTS_N	EOT3/TC3	UART3_SOUT*/ \
++{GPIO1_BASE, GPIO_OUT, GPIO_ALT2, GPIO_OUT_1}, /* GPIO38 UART0_DTR_N	UART1_SOUT	*/	\
++{GPIO1_BASE, GPIO_IN , GPIO_ALT2, GPIO_OUT_0}, /* GPIO39 UART0_RI_N	UART1_SIN	*/	\
+ {GPIO1_BASE, GPIO_IN , GPIO_ALT1, GPIO_OUT_0}, /* GPIO40 IRQ(3)				*/	\
+-{GPIO1_BASE, GPIO_OUT, GPIO_SEL,  GPIO_OUT_1}, /* GPIO41 CS(1)				*/	\
++{GPIO0_BASE, GPIO_OUT, GPIO_SEL , GPIO_OUT_1}, /* GPIO41 CS(1)				*/	\
+ {GPIO1_BASE, GPIO_OUT, GPIO_ALT1, GPIO_OUT_0}, /* GPIO42 CS(2)				*/	\
+ {GPIO1_BASE, GPIO_OUT, GPIO_ALT1, GPIO_OUT_0}, /* GPIO43 CS(3)		DMAReq1		IRQ(10)*/ \
+ {GPIO1_BASE, GPIO_IN , GPIO_ALT3, GPIO_OUT_0}, /* GPIO44 CS(4)		DMAAck1		IRQ(11)*/ \
+@@ -603,7 +611,7 @@
+ {GPIO1_BASE, GPIO_IN , GPIO_SEL , GPIO_OUT_0}, /* GPIO49  Unselect via TraceSelect Bit	*/	\
+ {GPIO1_BASE, GPIO_IN , GPIO_SEL , GPIO_OUT_0}, /* GPIO50  Unselect via TraceSelect Bit	*/	\
+ {GPIO1_BASE, GPIO_IN , GPIO_SEL , GPIO_OUT_0}, /* GPIO51  Unselect via TraceSelect Bit	*/	\
+-{GPIO1_BASE, GPIO_OUT, GPIO_SEL , GPIO_OUT_1}, /* GPIO52  HD LED						*/	\
++{GPIO1_BASE, GPIO_OUT, GPIO_SEL , GPIO_OUT_1}, /* GPIO52  HD LED                       	*/	\
+ {GPIO1_BASE, GPIO_IN , GPIO_SEL , GPIO_OUT_0}, /* GPIO53  Unselect via TraceSelect Bit	*/	\
+ {GPIO1_BASE, GPIO_IN , GPIO_SEL , GPIO_OUT_0}, /* GPIO54  Unselect via TraceSelect Bit	*/	\
+ {GPIO1_BASE, GPIO_IN , GPIO_SEL , GPIO_OUT_0}, /* GPIO55  Unselect via TraceSelect Bit	*/	\
+diff --color -rupN u-boot-2015.c.org/include/configs/Sam460ex.h.org u-boot-2015.c/include/configs/Sam460ex.h.org
+diff --color -rupN u-boot-2015.c.org/include/linux/compiler-gcc7.h u-boot-2015.c/include/linux/compiler-gcc7.h
+--- u-boot-2015.c.org/include/linux/compiler-gcc7.h	1970-01-01 01:00:00.000000000 +0100
++++ u-boot-2015.c/include/linux/compiler-gcc7.h	2024-11-14 12:22:25.500330647 +0100
+@@ -0,0 +1,65 @@
++#ifndef __LINUX_COMPILER_H
++#error "Please don't include <linux/compiler-gcc7.h> directly, include <linux/compiler.h> instead."
++#endif
++
++#define __used				__attribute__((__used__))
++#define __must_check			__attribute__((warn_unused_result))
++#define __compiler_offsetof(a, b)	__builtin_offsetof(a, b)
++
++/* Mark functions as cold. gcc will assume any path leading to a call
++   to them will be unlikely.  This means a lot of manual unlikely()s
++   are unnecessary now for any paths leading to the usual suspects
++   like BUG(), printk(), panic() etc. [but let's keep them for now for
++   older compilers]
++
++   Early snapshots of gcc 4.3 don't support this and we can't detect this
++   in the preprocessor, but we can live with this because they're unreleased.
++   Maketime probing would be overkill here.
++
++   gcc also has a __attribute__((__hot__)) to move hot functions into
++   a special section, but I don't see any sense in this right now in
++   the kernel context */
++#define __cold			__attribute__((__cold__))
++
++#define __UNIQUE_ID(prefix) __PASTE(__PASTE(__UNIQUE_ID_, prefix), __COUNTER__)
++
++#ifndef __CHECKER__
++# define __compiletime_warning(message) __attribute__((warning(message)))
++# define __compiletime_error(message) __attribute__((error(message)))
++#endif /* __CHECKER__ */
++
++/*
++ * Mark a position in code as unreachable.  This can be used to
++ * suppress control flow warnings after asm blocks that transfer
++ * control elsewhere.
++ *
++ * Early snapshots of gcc 4.5 don't support this and we can't detect
++ * this in the preprocessor, but we can live with this because they're
++ * unreleased.  Really, we need to have autoconf for the kernel.
++ */
++#define unreachable() __builtin_unreachable()
++
++/* Mark a function definition as prohibited from being cloned. */
++#define __noclone	__attribute__((__noclone__))
++
++/*
++ * Tell the optimizer that something else uses this function or variable.
++ */
++#define __visible __attribute__((externally_visible))
++
++/*
++ * GCC 'asm goto' miscompiles certain code sequences:
++ *
++ *   http://gcc.gnu.org/bugzilla/show_bug.cgi?id=58670
++ *
++ * Work it around via a compiler barrier quirk suggested by Jakub Jelinek.
++ *
++ * (asm goto is automatically volatile - the naming reflects this.)
++ */
++#define asm_volatile_goto(x...)	do { asm goto(x); asm (""); } while (0)
++
++#ifdef CONFIG_ARCH_USE_BUILTIN_BSWAP
++#define __HAVE_BUILTIN_BSWAP32__
++#define __HAVE_BUILTIN_BSWAP64__
++#define __HAVE_BUILTIN_BSWAP16__
++#endif /* CONFIG_ARCH_USE_BUILTIN_BSWAP */
+diff --color -rupN u-boot-2015.c.org/Makefile u-boot-2015.c/Makefile
+--- u-boot-2015.c.org/Makefile	2024-04-25 22:41:39.000000000 +0200
++++ u-boot-2015.c/Makefile	2024-11-29 09:59:50.839654310 +0100
+@@ -136,8 +136,8 @@ unexport CDPATH
+ # The "tools" are needed early, so put this first
+ # Don't include stuff already done in $(LIBS)
+ SUBDIRS	= tools \
+-	  examples/standalone \
+-	  examples/api
++#	  examples/standalone \
++#	  examples/api
+ 
+ .PHONY : $(SUBDIRS)
+ 
+@@ -253,12 +253,12 @@ LIBBOARD := $(addprefix $(obj),$(LIBBOAR
+ # Add GCC lib
+ ifdef USE_PRIVATE_LIBGCC
+ ifeq ("$(USE_PRIVATE_LIBGCC)", "yes")
+-PLATFORM_LIBGCC = -L $(OBJTREE)/arch/$(ARCH)/lib -lgcc
++PLATFORM_LIBGCC = -L $(OBJTREE)/arch/$(ARCH)/lib /tmp/libgcc.a
+ else
+-PLATFORM_LIBGCC = -L $(USE_PRIVATE_LIBGCC) -lgcc
++PLATFORM_LIBGCC = -L $(USE_PRIVATE_LIBGCC) /tmp/libgcc.a
+ endif
+ else
+-PLATFORM_LIBGCC = -L $(shell dirname `$(CC) $(CFLAGS) -print-libgcc-file-name`) -lgcc
++PLATFORM_LIBGCC = -L $(shell dirname `$(CC) $(CFLAGS) -print-libgcc-file-name`) /tmp/libgcc.a
+ endif
+ PLATFORM_LIBS += $(PLATFORM_LIBGCC)
+ export PLATFORM_LIBS
+diff --color -rupN u-boot-2015.c.org/README u-boot-2015.c/README
+--- u-boot-2015.c.org/README	2022-12-17 16:24:47.000000000 +0100
++++ u-boot-2015.c/README	2024-11-29 11:30:59.919673043 +0100
+@@ -1,3 +1,17 @@
++!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
++!! This is U-Boot for sam460ex emulation in QEMU. !!
++!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
++
++This is based on ACube's U-Boot 2015.c version and u-boot-sam460-20100605-fixed.patch for QEMU
++which itself has board specific changes compared to upstream U-Boot but this
++version has additional fixes and changes that were only tested on QEMU
++not on real hardware. Therefore you should not try to use it on real
++hardware as it may not work or may cause problems.
++
++Source:
++https://www.acube-systems.biz/download/u-boot-2015.c_prod.tar.gz
++http://goliat.eik.bme.hu/~balaton/qemu/u-boot-sam460-20100605-fixed.patch
++
+ #
+ # (C) Copyright 2000 - 2009
+ # Wolfgang Denk, DENX Software Engineering, wd@denx.de.
